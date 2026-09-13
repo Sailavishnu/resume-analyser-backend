@@ -1,9 +1,20 @@
-# Python
+# Environment variables (NEVER commit secrets to git)
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Python byte code and caches
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+
+# Distribution / packaging
 build/
 develop-eggs/
 dist/
@@ -20,18 +31,49 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environments
 venv/
 env/
 ENV/
+.venv/
+env.bak/
+venv.bak/
 
-# Environment Variables
-.env
-.env.local
+# SQLite & local databases
+*.sqlite
+*.sqlite3
+*.db
 
-# IDE
+# Uploads and temporary media
+uploads/
+app/uploads/
+temp/
+tmp/
+
+# Unit test & coverage reports
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE & editors
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Uploads
-app/uploads/
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
