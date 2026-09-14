@@ -28,6 +28,14 @@ class Settings(BaseModel):
     )
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "resume_ai_platform")
     
+    @property
+    def MONGO_URI(self) -> str:
+        return self.MONGODB_URI
+        
+    @property
+    def MONGO_DB_NAME(self) -> str:
+        return self.MONGODB_DB_NAME
+    
     # CORS
     BACKEND_CORS_ORIGINS: list[str] = [
         origin.strip()
@@ -59,10 +67,17 @@ class Settings(BaseModel):
     
     # Admin Credentials
     ADMIN_ID: str = os.getenv("ADMIN_ID", "admin")
+    ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@resumeai.com")
     ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin")
     
     # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./resume_ai.db")
+    
+    # ML Model
+    ML_MODEL_PATH: str = os.getenv(
+        "ML_MODEL_PATH",
+        str(Path(__file__).resolve().parent.parent.parent / "ml" / "artifacts" / "resume_job_match_model.joblib")
+    )
     
     # Uploads
     UPLOAD_DIR: str = os.getenv(

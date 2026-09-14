@@ -73,7 +73,7 @@ class EmbeddingService:
             or (num_texts, embedding_dim) for multiple texts
         """
         if not self.is_loaded:
-            raise RuntimeError("Embedding model not loaded. Call load_model() first.")
+            self.load_model()
         
         if not text:
             raise ValueError("Text input cannot be empty")

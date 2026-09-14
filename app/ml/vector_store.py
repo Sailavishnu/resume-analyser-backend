@@ -25,16 +25,29 @@ class VectorStore:
     - Batch operations
     """
     
-    def __init__(self, embedding_dim: int = 384, index_type: str = "flat"):
+    def __init__(
+        self, 
+        embedding_dim: int = 384, 
+        index_type: str = "flat",
+        index_path: Optional[str] = None,
+        metadata_path: Optional[str] = None
+    ):
         """
         Initialize vector store.
         
         Args:
             embedding_dim: Dimension of embedding vectors (384 for MiniLM)
             index_type: FAISS index type ('flat' for exact search, 'ivf' for approximate)
+            index_path: Path to FAISS index file
+            metadata_path: Path to metadata pickle file
         """
         self.embedding_dim = embedding_dim
         self.index_type = index_type
+        
+        backend_root = Path(__file__).resolve().parent.parent.parent
+        artifacts_dir = backend_root / "ml" / "artifacts"
+        self.index_path = str(index_path or (artifacts_dir / "job_vectors.index"))
+        self.metadata_path = str(metadata_path or (artifacts_dir / "job_vectors.pkl"))
         
         # FAISS index
         self.index: Optional[faiss.Index] = None
@@ -228,7 +241,19 @@ class VectorStore:
         # This would require access to original job data - placeholder for now
         logger.warning("Full rebuild requires re-encoding. Not implemented yet.")
     
-    def save(self, index_path: str, metadata_path: str):
+    def is_built(self) -> bool:
+        """Check if vector index contains indexed data or files exist."""
+        if self.index is not None and self.index.ntotal > 0:
+            return True
+        if Path(self.index_path).exists() and Path(self.metadata_path).exists():
+            try:
+                self.load()
+                return self.index is not None and self.index.ntotal > 0
+            except Exception:
+                return False
+        return False
+
+    def save(self, index_path: Optional[str] = None, metadata_path: Optional[str] = None):
         """
         Save index and metadata to disk.
         
@@ -236,9 +261,14 @@ class VectorStore:
             index_path: Path to save FAISS index (.index file)
             metadata_path: Path to save metadata (.pkl file)
         """
+        target_index_path = index_path or self.index_path
+        target_metadata_path = metadata_path or self.metadata_path
         try:
+            Path(target_index_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(target_metadata_path).parent.mkdir(parents=True, exist_ok=True)
+            
             # Save FAISS index
-            faiss.write_index(self.index, index_path)
+            faiss.write_index(self.index, target_index_path)
             
             # Save metadata
             metadata = {
@@ -247,15 +277,15 @@ class VectorStore:
                 "embedding_dim": self.embedding_dim,
                 "index_type": self.index_type
             }
-            with open(metadata_path, "wb") as f:
+            with open(target_metadata_path, "wb") as f:
                 pickle.dump(metadata, f)
             
-            logger.info(f"Saved vector store: {index_path}, {metadata_path}")
+            logger.info(f"Saved vector store: {target_index_path}, {target_metadata_path}")
         except Exception as e:
             logger.error(f"Error saving vector store: {e}")
             raise
     
-    def load(self, index_path: str, metadata_path: str):
+    def load(self, index_path: Optional[str] = None, metadata_path: Optional[str] = None):
         """
         Load index and metadata from disk.
         
@@ -263,12 +293,19 @@ class VectorStore:
             index_path: Path to FAISS index file
             metadata_path: Path to metadata file
         """
+        target_index_path = index_path or self.index_path
+        target_metadata_path = metadata_path or self.metadata_path
+        
+        if not Path(target_index_path).exists() or not Path(target_metadata_path).exists():
+            logger.info(f"Vector store files not found at {target_index_path}")
+            return False
+            
         try:
             # Load FAISS index
-            self.index = faiss.read_index(index_path)
+            self.index = faiss.read_index(target_index_path)
             
             # Load metadata
-            with open(metadata_path, "rb") as f:
+            with open(target_metadata_path, "rb") as f:
                 metadata = pickle.load(f)
             
             self.job_ids = metadata["job_ids"]
@@ -280,14 +317,14 @@ class VectorStore:
                 f"Loaded vector store with {len(self.job_ids)} jobs. "
                 f"Index type: {self.index_type}, dim: {self.embedding_dim}"
             )
+            return True
         except Exception as e:
             logger.error(f"Error loading vector store: {e}")
             raise
     
-    @property
     def size(self) -> int:
         """Get number of jobs in store (including deleted)."""
-        return self.index.ntotal
+        return self.index.ntotal if self.index is not None else 0
     
     @property
     def active_size(self) -> int:
@@ -299,13 +336,14 @@ class VectorStore:
     
     def get_statistics(self) -> dict:
         """Get vector store statistics."""
+        current_size = self.size()
         return {
-            "total_jobs": self.size,
+            "total_jobs": current_size,
             "active_jobs": self.active_size,
-            "deleted_jobs": self.size - self.active_size,
+            "deleted_jobs": current_size - self.active_size,
             "embedding_dim": self.embedding_dim,
             "index_type": self.index_type,
-            "memory_size_mb": self.index.ntotal * self.embedding_dim * 4 / (1024 * 1024)  # Rough estimate
+            "memory_size_mb": current_size * self.embedding_dim * 4 / (1024 * 1024)  # Rough estimate
         }
 
 

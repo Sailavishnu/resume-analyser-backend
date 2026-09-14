@@ -21,8 +21,10 @@ _db: Database | None = None
 def connect_db() -> None:
     """Call once at application startup."""
     global _client, _db
-    _client = MongoClient(settings.MONGO_URI)
-    _db = _client[settings.MONGO_DB_NAME]
+    uri = getattr(settings, "MONGODB_URI", getattr(settings, "MONGO_URI", None))
+    db_name = getattr(settings, "MONGODB_DB_NAME", getattr(settings, "MONGO_DB_NAME", "resume_ai_platform"))
+    _client = MongoClient(uri)
+    _db = _client[db_name]
     # Ping to validate connection early
     _client.admin.command("ping")
 

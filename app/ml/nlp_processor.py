@@ -63,6 +63,10 @@ class NLPProcessor:
                 )
                 raise
     
+    def load(self):
+        """Alias for load_model."""
+        self.load_model()
+    
     @property
     def is_loaded(self) -> bool:
         """Check if model is loaded."""

@@ -22,7 +22,7 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from app.db.mongodb import get_db
+from app.db.mongodb import connect_db, get_db
 from app.db.collections import JOBS_COLLECTION
 from app.ml.embeddings import embedding_service, get_job_embedding
 from app.ml.vector_store import get_vector_store
@@ -60,8 +60,12 @@ def build_index(rebuild: bool = False):
     
     # Connect to MongoDB
     logger.info("Connecting to MongoDB...")
+    connect_db()
     db = get_db()
     jobs_collection = db[JOBS_COLLECTION]
+    
+    # Load embedding model
+    embedding_service.load_model()
     
     # Query active jobs
     logger.info("Fetching active jobs from database...")
