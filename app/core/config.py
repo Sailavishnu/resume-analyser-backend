@@ -5,7 +5,7 @@ from pydantic import BaseModel
 # Load .env file manually (avoid python-dotenv dependency for now)
 _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 if _env_path.exists():
-    with open(_env_path) as f:
+    with open(_env_path, encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
