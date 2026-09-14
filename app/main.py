@@ -84,13 +84,47 @@ async def startup_event():
         print(f"⚠️  ML model loading failed: {e}")
         print("   → Job matching will be unavailable until model is trained")
     
+    # Load NLP models (spaCy, Sentence-BERT)
+    print("\n📚 Loading NLP models...")
+    try:
+        from app.ml.nlp_processor import nlp_processor
+        nlp_processor.load()
+        print("✅ spaCy model loaded successfully")
+    except Exception as e:
+        print(f"⚠️  spaCy model loading failed: {e}")
+        print("   → Run: python -m spacy download en_core_web_sm")
+        print("   → Semantic features will be limited")
+    
+    try:
+        from app.ml.embeddings import embedding_service
+        embedding_service.load_model()
+        print("✅ Sentence-BERT model loaded successfully")
+    except Exception as e:
+        print(f"⚠️  Sentence-BERT loading failed: {e}")
+        print("   → Semantic search will be unavailable")
+    
+    # Load FAISS vector index
+    try:
+        from app.ml.vector_store import get_vector_store
+        vector_store = get_vector_store()
+        vector_store.load()
+        if vector_store.is_built():
+            print(f"✅ FAISS index loaded successfully ({vector_store.size()} jobs indexed)")
+        else:
+            print("⚠️  FAISS index not found")
+            print("   → Run: python ml/scripts/build_vector_index.py")
+            print("   → Semantic job search will be unavailable")
+    except Exception as e:
+        print(f"⚠️  FAISS index loading failed: {e}")
+        print("   → Semantic job search will be unavailable")
+    
     # Verify Cloudinary config
     if settings.cloudinary_configured:
         print("✅ Cloudinary configuration found")
     else:
         print("⚠️  Cloudinary not configured - file uploads will fail")
     
-    print(f"🌍 API Documentation: http://{settings.HOST}:{settings.PORT}/docs")
+    print(f"\n🌍 API Documentation: http://{settings.HOST}:{settings.PORT}/docs")
     print(f"📊 Health Check: http://{settings.HOST}:{settings.PORT}/health")
 
 
@@ -198,6 +232,69 @@ async def health_check():
         health_status["components"]["ml_model"] = {
             "status": "unavailable",
             "details": "Model not loaded - train model first"
+        }
+    
+    # Check NLP models
+    try:
+        from app.ml.nlp_processor import nlp_processor
+        if nlp_processor.is_loaded:
+            health_status["components"]["nlp_spacy"] = {
+                "status": "healthy",
+                "model": "en_core_web_sm",
+                "details": "spaCy NLP ready"
+            }
+        else:
+            health_status["components"]["nlp_spacy"] = {
+                "status": "unavailable",
+                "details": "Run: python -m spacy download en_core_web_sm"
+            }
+    except Exception as e:
+        health_status["components"]["nlp_spacy"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check Sentence-BERT
+    try:
+        from app.ml.embeddings import embedding_service
+        if embedding_service.is_loaded:
+            health_status["components"]["embeddings"] = {
+                "status": "healthy",
+                "model": "all-MiniLM-L6-v2",
+                "dimension": 384,
+                "details": "Sentence-BERT ready"
+            }
+        else:
+            health_status["components"]["embeddings"] = {
+                "status": "unavailable",
+                "details": "Model will auto-download on first use"
+            }
+    except Exception as e:
+        health_status["components"]["embeddings"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check FAISS vector index
+    try:
+        from app.ml.vector_store import get_vector_store
+        vector_store = get_vector_store()
+        if vector_store.is_built():
+            health_status["components"]["vector_search"] = {
+                "status": "healthy",
+                "type": "FAISS",
+                "jobs_indexed": vector_store.size(),
+                "details": "Semantic search ready"
+            }
+        else:
+            health_status["components"]["vector_search"] = {
+                "status": "unavailable",
+                "details": "Run: python ml/scripts/build_vector_index.py"
+            }
+    except Exception as e:
+        health_status["components"]["vector_search"] = {
+            "status": "error",
+            "error": str(e)
         }
     
     # Check Cloudinary
