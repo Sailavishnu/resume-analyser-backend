@@ -1,28 +1,48 @@
 """
 Feature extraction for the Resume-Job Match ML model.
 
-Converts resume + job data into the exact 6 features used during training:
+Converts resume + job data into features for match prediction:
+
+Traditional Features (6):
 - skill_overlap
 - required_skill_coverage
 - keyword_overlap
 - experience_similarity
 - education_match
 - project_relevance
+
+Semantic Features (3):
+- semantic_similarity (Sentence-BERT embeddings)
+- skill_semantic_match (NLP-processed skill matching)
+- description_similarity (spaCy text similarity)
 """
 import re
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ResumeJobFeatureExtractor:
     """
     Extracts ML features from resume and job data for match prediction.
+    
+    Supports both traditional features and semantic (NLP/embedding) features.
     CRITICAL: Feature order and preprocessing must match training exactly.
     """
     
-    def __init__(self):
-        # Feature names in exact training order
-        self.feature_names = [
+    def __init__(self, use_semantic: bool = False):
+        """
+        Initialize feature extractor.
+        
+        Args:
+            use_semantic: Whether to include semantic similarity features
+        """
+        self.use_semantic = use_semantic
+        
+        # Traditional feature names (original 6)
+        self.traditional_features = [
             'skill_overlap',
             'required_skill_coverage', 
             'keyword_overlap',
@@ -30,19 +50,64 @@ class ResumeJobFeatureExtractor:
             'education_match',
             'project_relevance'
         ]
+        
+        # Semantic feature names (new 3)
+        self.semantic_features = [
+            'semantic_similarity',
+            'skill_semantic_match',
+            'description_similarity'
+        ]
+        
+        # All features
+        self.feature_names = (
+            self.traditional_features + 
+            (self.semantic_features if use_semantic else [])
+        )
     
-    def extract_features(self, resume_data: dict, job_data: dict) -> np.ndarray:
+    def extract_features(
+        self, 
+        resume_data: dict, 
+        job_data: dict,
+        resume_embedding: Optional[np.ndarray] = None,
+        job_embedding: Optional[np.ndarray] = None
+    ) -> np.ndarray:
         """
-        Extract the 6-feature vector for ML prediction.
+        Extract feature vector for ML prediction.
         
         Args:
             resume_data: Parsed resume data from MongoDB
             job_data: Job requirements from MongoDB
+            resume_embedding: Optional pre-computed resume embedding (384-dim)
+            job_embedding: Optional pre-computed job embedding (384-dim)
             
         Returns:
-            Feature vector as numpy array, shape (6,)
+            Feature vector as numpy array
+            - shape (6,) if use_semantic=False (traditional only)
+            - shape (9,) if use_semantic=True (traditional + semantic)
         """
-        # Extract component features
+        # Traditional features (always included)
+        traditional = self._extract_traditional_features(resume_data, job_data)
+        
+        if not self.use_semantic:
+            return traditional
+        
+        # Semantic features (if enabled)
+        semantic = self._extract_semantic_features(
+            resume_data, 
+            job_data,
+            resume_embedding,
+            job_embedding
+        )
+        
+        # Combine traditional + semantic
+        return np.concatenate([traditional, semantic])
+    
+    def _extract_traditional_features(
+        self, 
+        resume_data: dict, 
+        job_data: dict
+    ) -> np.ndarray:
+        """Extract the original 6 traditional features."""
         skill_overlap = self._calculate_skill_overlap(resume_data, job_data)
         required_coverage = self._calculate_required_skill_coverage(resume_data, job_data)
         keyword_overlap = self._calculate_keyword_overlap(resume_data, job_data)
@@ -50,7 +115,6 @@ class ResumeJobFeatureExtractor:
         education_match = self._calculate_education_match(resume_data, job_data)
         project_relevance = self._calculate_project_relevance(resume_data, job_data)
         
-        # Return in exact training order
         return np.array([
             skill_overlap,
             required_coverage,
@@ -59,6 +123,122 @@ class ResumeJobFeatureExtractor:
             education_match,
             project_relevance
         ])
+    
+    def _extract_semantic_features(
+        self,
+        resume_data: dict,
+        job_data: dict,
+        resume_embedding: Optional[np.ndarray] = None,
+        job_embedding: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        Extract semantic similarity features using NLP.
+        
+        Returns:
+            Array of shape (3,) with semantic features
+        """
+        # Import here to avoid loading models if not needed
+        from app.ml.embeddings import embedding_service, calculate_semantic_similarity
+        from app.ml.nlp_processor import nlp_processor
+        
+        # 1. Semantic similarity using embeddings
+        try:
+            if resume_embedding is not None and job_embedding is not None:
+                # Use pre-computed embeddings
+                semantic_sim = float(np.dot(resume_embedding, job_embedding))
+            else:
+                # Compute on-the-fly
+                parsed_data = resume_data.get('parsed_data', resume_data)
+                semantic_sim = calculate_semantic_similarity(parsed_data, job_data)
+        except Exception as e:
+            logger.warning(f"Failed to compute semantic similarity: {e}")
+            semantic_sim = 0.5  # Default neutral value
+        
+        # 2. NLP-based skill matching
+        try:
+            skill_semantic = self._calculate_nlp_skill_match(resume_data, job_data)
+        except Exception as e:
+            logger.warning(f"Failed to compute NLP skill match: {e}")
+            skill_semantic = 0.5
+        
+        # 3. Description similarity using spaCy
+        try:
+            desc_similarity = self._calculate_description_similarity(resume_data, job_data)
+        except Exception as e:
+            logger.warning(f"Failed to compute description similarity: {e}")
+            desc_similarity = 0.5
+        
+        return np.array([
+            semantic_sim,
+            skill_semantic,
+            desc_similarity
+        ])
+    
+    def _calculate_nlp_skill_match(self, resume_data: dict, job_data: dict) -> float:
+        """
+        Calculate skill match using NLP normalization.
+        
+        More sophisticated than exact string matching.
+        """
+        from app.ml.nlp_processor import nlp_processor
+        
+        if not nlp_processor.is_loaded:
+            # Fallback to traditional method
+            return self._calculate_skill_overlap(resume_data, job_data)
+        
+        # Extract and normalize skills
+        resume_skills = self._extract_all_resume_skills(resume_data)
+        job_skills = job_data.get('required_skills', []) + job_data.get('preferred_skills', [])
+        
+        if not resume_skills or not job_skills:
+            return 0.0
+        
+        # Normalize using NLP
+        normalized_resume = nlp_processor.normalize_skills(resume_skills)
+        normalized_job = nlp_processor.normalize_skills(job_skills)
+        
+        # Calculate overlap
+        resume_set = set(normalized_resume)
+        job_set = set(normalized_job)
+        
+        intersection = resume_set & job_set
+        union = resume_set | job_set
+        
+        return len(intersection) / len(union) if union else 0.0
+    
+    def _calculate_description_similarity(self, resume_data: dict, job_data: dict) -> float:
+        """
+        Calculate similarity between resume summary and job description using spaCy.
+        """
+        from app.ml.nlp_processor import nlp_processor
+        
+        if not nlp_processor.is_loaded:
+            return 0.5  # Neutral default
+        
+        parsed_data = resume_data.get('parsed_data', {})
+        resume_summary = parsed_data.get('summary', '')
+        
+        # Also include experience descriptions
+        experience_text = []
+        for exp in parsed_data.get('experience', []):
+            if exp.get('description'):
+                experience_text.append(exp['description'])
+        
+        resume_text = ' '.join([resume_summary] + experience_text[:2])  # Limit text length
+        job_description = job_data.get('description', '')
+        
+        if not resume_text or not job_description:
+            return 0.5
+        
+        try:
+            similarity = nlp_processor.calculate_text_similarity(
+                resume_text[:500],  # Limit to 500 chars for speed
+                job_description[:500]
+            )
+            return float(similarity)
+        except Exception as e:
+            logger.warning(f"spaCy similarity calculation failed: {e}")
+            return 0.5
     
     def _calculate_skill_overlap(self, resume_data: dict, job_data: dict) -> float:
         """Calculate overall skill overlap (0-1)."""
