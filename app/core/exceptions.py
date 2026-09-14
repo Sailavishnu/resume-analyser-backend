@@ -39,6 +39,30 @@ class ForbiddenError(AppError):
         super().__init__(message, status_code=403)
 
 
+class ConflictError(AppError):
+    """Conflict exception (duplicate resource)."""
+    def __init__(self, message: str = "Resource already exists"):
+        super().__init__(message, status_code=409)
+
+
+class StorageError(AppError):
+    """Storage/file operation error exception."""
+    def __init__(self, message: str = "Storage operation failed"):
+        super().__init__(message, status_code=500)
+
+
+class BadRequestError(AppError):
+    """Bad request exception."""
+    def __init__(self, message: str = "Bad request"):
+        super().__init__(message, status_code=400)
+
+
+class ProcessingError(AppError):
+    """Processing/computation error exception."""
+    def __init__(self, message: str = "Processing failed"):
+        super().__init__(message, status_code=500)
+
+
 # Exception handlers
 
 async def app_error_handler(request: Request, exc: AppError):
