@@ -17,6 +17,16 @@ class Settings(BaseModel):
     PROJECT_NAME: str = "Resume AI & Placement Platform API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    APP_ENV: str = "development"
+    
+    # MongoDB
+    MONGODB_URI: str = os.getenv(
+        "MONGODB_URI",
+        "mongodb://localhost:27017"
+    )
+    MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "resume_ai_platform")
     
     # CORS
     BACKEND_CORS_ORIGINS: list[str] = [
@@ -27,10 +37,25 @@ class Settings(BaseModel):
         ).split(",")
     ]
     
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Alias for BACKEND_CORS_ORIGINS"""
+        return self.BACKEND_CORS_ORIGINS
+    
     # JWT Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "resume-ai-placement-platform-secret-2026")
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", str(60 * 24 * 7)))
+    
+    # Cloudinary
+    CLOUDINARY_CLOUD_NAME: str = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+    CLOUDINARY_API_KEY: str = os.getenv("CLOUDINARY_API_KEY", "")
+    CLOUDINARY_API_SECRET: str = os.getenv("CLOUDINARY_API_SECRET", "")
+    
+    @property
+    def cloudinary_configured(self) -> bool:
+        """Check if Cloudinary is configured"""
+        return bool(self.CLOUDINARY_CLOUD_NAME and self.CLOUDINARY_API_KEY and self.CLOUDINARY_API_SECRET)
     
     # Admin Credentials
     ADMIN_ID: str = os.getenv("ADMIN_ID", "admin")
