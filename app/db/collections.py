@@ -40,3 +40,7 @@ CAREER_READINESS_HISTORY   = "career_readiness_history"
 
 JOB_REPORTS                = "job_reports"
 AUDIT_LOGS                 = "audit_logs"
+
+# Aliases for backward compatibility
+RESUMES_COLLECTION = RESUMES
+JOBS_COLLECTION = JOBS
