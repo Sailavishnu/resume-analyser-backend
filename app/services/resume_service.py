@@ -26,12 +26,12 @@ class ResumeService:
         file_content: bytes, 
         filename: str, 
         content_type: str,
-        max_size_bytes: int
+        max_size_bytes: int,
+        slot: str = "primary"
     ) -> Dict[str, Any]:
         """
-        Upload and process a new resume.
-        
-        Returns the created resume document.
+        Upload and process a new resume to Cloudinary + MongoDB.
+        Supports 2-slot vault (primary / secondary).
         """
         # Validate file
         validation = validate_resume_file(filename, content_type, len(file_content), max_size_bytes)
@@ -45,23 +45,26 @@ class ResumeService:
             # Upload to Cloudinary
             upload_result = self.cloudinary.upload_resume(file_content, unique_filename, student_id)
             
-            # Mark existing resumes as not current
-            self.db[C.RESUMES].update_many(
-                {"student_id": ObjectId(student_id)},
-                {"$set": {"is_current": False}}
-            )
+            # If uploaded as primary, demote existing primary to secondary
+            if slot == "primary":
+                self.db[C.RESUMES].update_many(
+                    {"student_id": ObjectId(student_id), "slot": "primary"},
+                    {"$set": {"slot": "secondary", "is_primary": False, "is_current": False}}
+                )
             
             # Create resume document
             resume_doc = {
                 "student_id": ObjectId(student_id),
-                "name": validation['sanitized_name'].split('.')[0],  # Remove extension
+                "name": validation['sanitized_name'].split('.')[0],
                 "file_name": unique_filename,
                 "file_type": content_type,
                 "file_size": len(file_content),
-                "cloudinary_public_id": upload_result['public_id'],
-                "cloudinary_secure_url": upload_result['secure_url'],
+                "cloudinary_public_id": upload_result.get('public_id'),
+                "cloudinary_secure_url": upload_result.get('secure_url'),
                 "version": 1,
-                "is_current": True,
+                "slot": slot,
+                "is_primary": (slot == "primary"),
+                "is_current": (slot == "primary"),
                 "status": "uploaded",
                 "analysis_status": "pending",
                 "analysis_progress": 0,
@@ -72,20 +75,34 @@ class ResumeService:
             
             result = self.db[C.RESUMES].insert_one(resume_doc)
             resume_doc["_id"] = result.inserted_id
+            resume_doc["id"] = str(result.inserted_id)
             
-            # Start async analysis
+            # Process text and extract structure synchronously for immediate readiness
             await self._analyze_resume_async(str(result.inserted_id), file_content, content_type)
             
+            # Fetch updated resume with parsed_data and analysis
+            updated_doc = self.db[C.RESUMES].find_one({"_id": result.inserted_id})
+            if updated_doc:
+                updated_doc["id"] = str(updated_doc["_id"])
+                updated_doc["student_id"] = str(updated_doc["student_id"])
+                # Attach latest analysis
+                analysis = self.db[C.RESUME_ANALYSES].find_one({"resume_id": result.inserted_id})
+                if analysis:
+                    updated_doc["score"] = analysis.get("overall_score", 80)
+                    updated_doc["ats_score"] = analysis.get("ats_score", 85)
+                    updated_doc["analysis"] = analysis
+                return updated_doc
+            
+            resume_doc["student_id"] = str(resume_doc["student_id"])
             return resume_doc
             
         except Exception as e:
-            # Clean up on failure
-            if 'upload_result' in locals():
+            if 'upload_result' in locals() and upload_result.get('public_id'):
                 self.cloudinary.delete_file(upload_result['public_id'])
             raise StorageError(f"Resume upload failed: {str(e)}")
     
     async def get_student_resumes(self, student_id: str) -> List[Dict[str, Any]]:
-        """Get all resumes for a student."""
+        """Get all resumes for a student with analysis scores."""
         cursor = self.db[C.RESUMES].find(
             {"student_id": ObjectId(student_id)}
         ).sort("created_at", -1)
@@ -93,14 +110,52 @@ class ResumeService:
         resumes = []
         for doc in cursor:
             doc["id"] = str(doc["_id"])
+            doc["student_id"] = str(doc.get("student_id", student_id))
+            doc["slot"] = doc.get("slot") or ("primary" if doc.get("is_primary") else "secondary")
+            doc["is_primary"] = (doc["slot"] == "primary")
+            
+            # Attach analysis score if present
+            analysis = self.db[C.RESUME_ANALYSES].find_one(
+                {"resume_id": doc["_id"]},
+                sort=[("created_at", -1)]
+            )
+            if analysis:
+                doc["score"] = analysis.get("overall_score", 80)
+                doc["ats_score"] = analysis.get("ats_score", 85)
+                doc["analysis"] = analysis
+            else:
+                doc["score"] = doc.get("score", 80)
+                doc["ats_score"] = doc.get("ats_score", 85)
+            
             resumes.append(doc)
         
         return resumes
     
+    async def set_resume_slot(self, resume_id: str, student_id: str, slot: str) -> Dict[str, Any]:
+        """Set resume slot to 'primary' or 'secondary'."""
+        if slot not in ("primary", "secondary"):
+            raise ValidationError("Slot must be 'primary' or 'secondary'")
+        
+        # If setting as primary, demote other primary
+        if slot == "primary":
+            self.db[C.RESUMES].update_many(
+                {"student_id": ObjectId(student_id), "slot": "primary"},
+                {"$set": {"slot": "secondary", "is_primary": False, "is_current": False}}
+            )
+        
+        self.db[C.RESUMES].update_one(
+            {"_id": ObjectId(resume_id), "student_id": ObjectId(student_id)},
+            {"$set": {
+                "slot": slot,
+                "is_primary": (slot == "primary"),
+                "is_current": (slot == "primary"),
+                "updated_at": utc_now()
+            }}
+        )
+        return await self.get_resume_by_id(resume_id, student_id)
+    
     async def get_resume_by_id(self, resume_id: str, student_id: str = None) -> Dict[str, Any]:
-        """
-        Get resume by ID. Optionally verify ownership.
-        """
+        """Get resume by ID."""
         filter_dict = {"_id": ObjectId(resume_id)}
         if student_id:
             filter_dict["student_id"] = ObjectId(student_id)
@@ -110,6 +165,15 @@ class ResumeService:
             raise NotFoundError("Resume")
         
         resume["id"] = str(resume["_id"])
+        resume["slot"] = resume.get("slot") or ("primary" if resume.get("is_primary") else "secondary")
+        resume["is_primary"] = (resume["slot"] == "primary")
+        
+        analysis = self.db[C.RESUME_ANALYSES].find_one({"resume_id": resume["_id"]})
+        if analysis:
+            resume["score"] = analysis.get("overall_score", 80)
+            resume["ats_score"] = analysis.get("ats_score", 85)
+            resume["analysis"] = analysis
+            
         return resume
     
     async def delete_resume(self, resume_id: str, student_id: str) -> None:

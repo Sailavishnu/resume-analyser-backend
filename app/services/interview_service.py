@@ -30,7 +30,7 @@ class AIInterviewService:
         """
         Starts a new AI Interview session tailored to candidate's real resume data.
         """
-        # Find candidate resume
+        # Find candidate primary resume
         resume = None
         if resume_id:
             try:
@@ -39,10 +39,20 @@ class AIInterviewService:
                 pass
         
         if not resume:
-            # Get latest parsed resume for student
-            resume = self.db[C.RESUMES].find_one(
-                {"student_id": ObjectId(student_id)},
-                sort=[("created_at", -1)]
+            # Look for PRIMARY slot resume first
+            resume = (
+                self.db[C.RESUMES].find_one(
+                    {"student_id": ObjectId(student_id), "slot": "primary"},
+                    sort=[("created_at", -1)]
+                )
+                or self.db[C.RESUMES].find_one(
+                    {"student_id": ObjectId(student_id), "is_primary": True},
+                    sort=[("created_at", -1)]
+                )
+                or self.db[C.RESUMES].find_one(
+                    {"student_id": ObjectId(student_id)},
+                    sort=[("created_at", -1)]
+                )
             )
 
         parsed_data = {}

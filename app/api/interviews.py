@@ -14,6 +14,7 @@ from app.db.mongodb import get_database
 from app.db import collections as C
 from app.schemas.common import DataResponse
 from app.services.interview_service import AIInterviewService
+from app.utils.serializers import serialize_mongo_doc
 
 router = APIRouter(prefix="/interviews", tags=["AI Mock Interviews"])
 
@@ -61,7 +62,7 @@ async def start_interview_session(
         resume_id=request.resume_id
     )
     return DataResponse(
-        data=result,
+        data=serialize_mongo_doc(result),
         message="AI Mock Interview session started successfully."
     )
 
@@ -85,7 +86,7 @@ async def submit_interview_answer(
         answer_text=request.answer_text
     )
     return DataResponse(
-        data=result,
+        data=serialize_mongo_doc(result),
         message="Answer evaluated successfully."
     )
 
@@ -100,7 +101,7 @@ async def get_interview_session(
     student_id = await _resolve_student_id(current_user, None, db)
     service = AIInterviewService(db)
     result = await service.get_interview(session_id, student_id)
-    return DataResponse(data=result)
+    return DataResponse(data=serialize_mongo_doc(result))
 
 
 @router.get("", response_model=DataResponse[List[Dict[str, Any]]])
@@ -112,4 +113,4 @@ async def get_my_interviews(
     student_id = await _resolve_student_id(current_user, None, db)
     service = AIInterviewService(db)
     results = await service.get_student_interviews(student_id)
-    return DataResponse(data=results)
+    return DataResponse(data=serialize_mongo_doc(results))

@@ -38,7 +38,7 @@ async def get_current_user(
 
     from bson import ObjectId
 
-    user = await db["users"].find_one({"_id": ObjectId(user_id)})
+    user = db["users"].find_one({"_id": ObjectId(user_id)})
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -98,7 +98,7 @@ async def get_optional_current_user(
         if not user_id:
             return None
         from bson import ObjectId
-        user = await db["users"].find_one({"_id": ObjectId(user_id)})
+        user = db["users"].find_one({"_id": ObjectId(user_id)})
         if user and user.get("is_active", True):
             user["id"] = str(user["_id"])
             return user

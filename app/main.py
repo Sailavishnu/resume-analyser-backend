@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import uvicorn
 
 from app.core.config import settings
+from app.utils.dates import utc_now as health_utc_now
 from app.core.exceptions import (
     AppError, 
     app_error_handler,
@@ -49,8 +50,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -164,6 +166,12 @@ app.include_router(analytics.router, prefix=settings.API_V1_STR)
 # AI Mock Interviews
 app.include_router(interviews.router, prefix=settings.API_V1_STR)
 
+# Static files for local uploads fallback
+from fastapi.staticfiles import StaticFiles
+import os
+os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+
 # ─── Root & Health Endpoints ──────────────────────────────────────────────
 
 @app.get("/")
@@ -202,7 +210,7 @@ async def health_check():
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "environment": settings.APP_ENV,
-        "timestamp": "2024-02-15T10:30:00Z",  # Would use utc_now()
+        "timestamp": str(health_utc_now()),
         "components": {}
     }
     

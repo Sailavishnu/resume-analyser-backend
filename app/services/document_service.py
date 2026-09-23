@@ -1,7 +1,10 @@
 """
 Document parsing service for resumes (PDF and DOCX extraction).
 """
-import fitz  # PyMuPDF
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # PyMuPDF fallback
 from docx import Document
 from typing import Dict, Any
 import re

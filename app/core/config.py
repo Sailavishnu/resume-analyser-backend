@@ -24,9 +24,9 @@ class Settings(BaseModel):
     # MongoDB
     MONGODB_URI: str = os.getenv(
         "MONGODB_URI",
-        "mongodb://localhost:27017"
+        os.getenv("MONGO_URI", "mongodb://localhost:27017")
     )
-    MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "resume_ai_platform")
+    MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", os.getenv("MONGO_DB_NAME", "resume_ai_platform"))
     
     @property
     def MONGO_URI(self) -> str:
@@ -85,6 +85,11 @@ class Settings(BaseModel):
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
     )
     MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
+    
+    @property
+    def max_upload_bytes(self) -> int:
+        """Convert MAX_UPLOAD_SIZE_MB to bytes for file validation."""
+        return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 settings = Settings()
 

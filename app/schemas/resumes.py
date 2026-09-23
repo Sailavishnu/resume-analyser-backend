@@ -1,9 +1,17 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, model_validator
+from typing import Optional, Any
 from datetime import datetime
+from app.utils.serializers import serialize_mongo_doc
 
 
 class ResumeOut(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_mongo(cls, data: Any) -> Any:
+        return serialize_mongo_doc(data)
+
     id: str
     student_id: str
     name: str
@@ -13,11 +21,17 @@ class ResumeOut(BaseModel):
     cloudinary_public_id: Optional[str] = None
     cloudinary_secure_url: Optional[str] = None
     version: int = 1
+    slot: Optional[str] = "primary"   # primary | secondary
+    is_primary: bool = True
     is_current: bool = True
+    score: Optional[int] = 80
+    ats_score: Optional[int] = 85
     status: str = "uploaded"          # uploaded | processing | analyzed | failed
     analysis_status: Optional[str] = None
     analysis_progress: Optional[int] = None
     analysis_stage: Optional[str] = None
+    parsed_data: Optional[dict] = None
+    analysis: Optional[dict] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

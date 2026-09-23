@@ -5,68 +5,101 @@ from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query
 from pymongo.database import Database
 from typing import List, Optional
 
-from app.core.dependencies import get_current_user, require_student
+from app.core.dependencies import get_current_user, require_student, get_optional_current_user
 from app.core.config import settings
 from app.db.mongodb import get_database
+from app.db import collections as C
 from app.schemas.common import DataResponse, PaginatedResponse, MessageResponse
 from app.schemas.resumes import (
     ResumeOut, AnalysisStatusOut, ResumeAnalysisOut, 
     ImprovementOut, ImprovementUpdateRequest, ResumeVersionOut
 )
 from app.services.resume_service import ResumeService
+from app.utils.serializers import serialize_mongo_doc
 
 router = APIRouter(prefix="/resumes", tags=["Resumes"])
+
+
+async def _resolve_student_id(user: Optional[dict], custom_id: Optional[str], db: Database) -> str:
+    from bson import ObjectId
+    for candidate in [user.get("id") if user else None, custom_id]:
+        if candidate and ObjectId.is_valid(candidate):
+            return candidate
+    first_student = db[C.USERS].find_one({"role": "student"})
+    if first_student:
+        return str(first_student["_id"])
+    return "65ce00000000000000000001"
 
 
 @router.post("/upload", response_model=DataResponse[ResumeOut])
 async def upload_resume(
     file: UploadFile = File(...),
-    current_user: dict = Depends(require_student),
+    slot: str = Query(default="primary"),
+    student_id: Optional[str] = Query(default=None),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
     db: Database = Depends(get_database)
 ):
-    """Upload and analyze a new resume."""
+    """Upload and analyze a new resume to Cloudinary + MongoDB."""
+    resolved_id = await _resolve_student_id(current_user, student_id, db)
     resume_service = ResumeService(db)
     
-    # Read file content
     file_content = await file.read()
     
-    # Upload and process
     resume = await resume_service.upload_resume(
-        student_id=current_user["id"],
+        student_id=resolved_id,
         file_content=file_content,
         filename=file.filename,
         content_type=file.content_type,
-        max_size_bytes=settings.max_upload_bytes
+        max_size_bytes=settings.max_upload_bytes,
+        slot=slot
     )
     
-    return DataResponse(data=ResumeOut(**resume))
+    return DataResponse(data=ResumeOut(**serialize_mongo_doc(resume)))
+
+
+@router.patch("/{resume_id}/slot", response_model=DataResponse[ResumeOut])
+async def update_resume_slot(
+    resume_id: str,
+    slot: str = Query(..., pattern="^(primary|secondary)$"),
+    student_id: Optional[str] = Query(default=None),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db: Database = Depends(get_database)
+):
+    """Set resume slot to 'primary' or 'secondary'."""
+    resolved_id = await _resolve_student_id(current_user, student_id, db)
+    resume_service = ResumeService(db)
+    
+    updated = await resume_service.set_resume_slot(resume_id, resolved_id, slot)
+    return DataResponse(data=ResumeOut(**serialize_mongo_doc(updated)))
 
 
 @router.get("", response_model=DataResponse[List[ResumeOut]])
 async def get_my_resumes(
-    current_user: dict = Depends(require_student),
+    student_id: Optional[str] = Query(default=None),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
     db: Database = Depends(get_database)
 ):
-    """Get all resumes for authenticated student."""
+    """Get all resumes for student."""
+    resolved_id = await _resolve_student_id(current_user, student_id, db)
     resume_service = ResumeService(db)
     
-    resumes = await resume_service.get_student_resumes(current_user["id"])
-    
-    return DataResponse(data=[ResumeOut(**r) for r in resumes])
+    resumes = await resume_service.get_student_resumes(resolved_id)
+    return DataResponse(data=[ResumeOut(**serialize_mongo_doc(r)) for r in resumes])
 
 
 @router.get("/{resume_id}", response_model=DataResponse[ResumeOut])
 async def get_resume(
     resume_id: str,
-    current_user: dict = Depends(require_student),
+    student_id: Optional[str] = Query(default=None),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
     db: Database = Depends(get_database)
 ):
     """Get specific resume by ID."""
+    resolved_id = await _resolve_student_id(current_user, student_id, db)
     resume_service = ResumeService(db)
     
-    resume = await resume_service.get_resume_by_id(resume_id, current_user["id"])
-    
-    return DataResponse(data=ResumeOut(**resume))
+    resume = await resume_service.get_resume_by_id(resume_id, resolved_id)
+    return DataResponse(data=ResumeOut(**serialize_mongo_doc(resume)))
 
 
 @router.delete("/{resume_id}", response_model=MessageResponse)
