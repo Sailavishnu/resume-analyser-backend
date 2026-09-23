@@ -82,3 +82,26 @@ async def require_student_or_admin(
             detail="Access restricted",
         )
     return current_user
+
+
+async def get_optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db=Depends(get_database),
+) -> dict | None:
+    """Returns user if valid token present, otherwise None."""
+    if credentials is None:
+        return None
+    try:
+        token = credentials.credentials
+        payload = decode_access_token(token)
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        from bson import ObjectId
+        user = await db["users"].find_one({"_id": ObjectId(user_id)})
+        if user and user.get("is_active", True):
+            user["id"] = str(user["_id"])
+            return user
+    except Exception:
+        return None
+    return None

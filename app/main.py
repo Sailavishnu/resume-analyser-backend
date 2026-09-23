@@ -24,7 +24,7 @@ from app.ml.predictor import predictor
 # Import all API routers
 from app.api import (
     auth, users, resumes, ats, jd_match, jobs, 
-    applications, candidates, notifications, analytics
+    applications, candidates, notifications, analytics, interviews
 )
 
 # ─── FastAPI Application Setup ────────────────────────────────────────────
@@ -160,6 +160,9 @@ app.include_router(candidates.router, prefix=settings.API_V1_STR)
 # Notifications & Analytics
 app.include_router(notifications.router, prefix=settings.API_V1_STR)
 app.include_router(analytics.router, prefix=settings.API_V1_STR)
+
+# AI Mock Interviews
+app.include_router(interviews.router, prefix=settings.API_V1_STR)
 
 # ─── Root & Health Endpoints ──────────────────────────────────────────────
 
