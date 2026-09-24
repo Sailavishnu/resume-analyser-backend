@@ -18,7 +18,8 @@ class ResumeOut(BaseModel):
     file_name: str
     file_type: str
     file_size: int
-    gridfs_file_id: Optional[str] = None
+    cloudinary_url: Optional[str] = None
+    cloudinary_public_id: Optional[str] = None
     version: int = 1
     slot: Optional[str] = "primary"   # primary | secondary
     is_primary: bool = True

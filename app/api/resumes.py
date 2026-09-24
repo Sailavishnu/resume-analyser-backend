@@ -212,29 +212,14 @@ async def download_resume(
     current_user: dict = Depends(require_student),
     db: Database = Depends(get_database)
 ):
-    """Download resume file."""
+    """Download resume file — redirects to Cloudinary Storage URL."""
     resume_service = ResumeService(db)
     
     resume = await resume_service.get_resume_by_id(resume_id, current_user["id"])
     
-    file_id = resume.get("gridfs_file_id")
-    if not file_id:
+    cloudinary_url = resume.get("cloudinary_url")
+    if not cloudinary_url:
         raise HTTPException(status_code=404, detail="Resume file not found")
     
-    from app.cloud.gridfs_service import GridFSService
-    from fastapi.responses import StreamingResponse
-    
-    gridfs_service = GridFSService(db)
-    grid_out = gridfs_service.get_file(file_id)
-    
-    if not grid_out:
-        raise HTTPException(status_code=404, detail="File content not found in GridFS")
-        
-    def iterfile():
-        yield grid_out.read()
-        
-    return StreamingResponse(
-        iterfile(),
-        media_type=resume.get("file_type", "application/pdf"),
-        headers={"Content-Disposition": f'attachment; filename="{resume.get("file_name", "resume.pdf")}"'}
-    )
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=cloudinary_url)

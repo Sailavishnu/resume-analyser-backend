@@ -6,7 +6,7 @@ from pymongo.database import Database
 from typing import Dict, Any, List
 
 from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError, StorageError
-from app.cloud.gridfs_service import GridFSService
+from app.cloud.cloudinary_service import CloudinaryService
 from app.ml.document_service import DocumentService
 from app.utils.dates import utc_now
 from app.ml.scoring import calculate_resume_health_score, calculate_ats_score
@@ -17,7 +17,7 @@ from app.cloud import collections as C
 class ResumeService:
     def __init__(self, db: Database):
         self.db = db
-        self.gridfs = GridFSService(db)
+        self.cloudinary = CloudinaryService()
         self.document_service = DocumentService()
     
     async def upload_resume(
@@ -30,7 +30,7 @@ class ResumeService:
         slot: str = "primary"
     ) -> Dict[str, Any]:
         """
-        Upload and process a new resume to Cloudinary + MongoDB.
+        Upload and process a new resume to Firebase Storage + MongoDB.
         Supports 2-slot vault (primary / secondary).
         """
         # Validate file
@@ -42,24 +42,39 @@ class ResumeService:
         unique_filename = generate_unique_filename(validation['sanitized_name'], f"student_{student_id}")
         
         try:
-            # Upload to GridFS
-            upload_result = self.gridfs.upload_resume(file_content, unique_filename, content_type, student_id)
+            # Upload to Cloudinary as raw resource under resumes/{student_id}/
+            upload_result = self.cloudinary.upload_resume(file_content, unique_filename, content_type, student_id)
+            
+            # Check if replacing an existing resume in the exact same slot
+            existing_in_slot = self.db[C.RESUMES].find_one({"student_id": ObjectId(student_id), "slot": slot})
             
             # If uploaded as primary, demote existing primary to secondary
             if slot == "primary":
+                existing_secondary = self.db[C.RESUMES].find_one({"student_id": ObjectId(student_id), "slot": "secondary"})
+                if existing_secondary and existing_secondary.get("cloudinary_public_id"):
+                    # Vault max size 2: remove old secondary when demoting primary
+                    self.cloudinary.delete_file(existing_secondary["cloudinary_public_id"])
+                    self.db[C.RESUMES].delete_one({"_id": existing_secondary["_id"]})
+                    
                 self.db[C.RESUMES].update_many(
                     {"student_id": ObjectId(student_id), "slot": "primary"},
                     {"$set": {"slot": "secondary", "is_primary": False, "is_current": False}}
                 )
+            elif slot == "secondary" and existing_in_slot:
+                # Direct replacement of secondary slot
+                if existing_in_slot.get("cloudinary_public_id"):
+                    self.cloudinary.delete_file(existing_in_slot["cloudinary_public_id"])
+                self.db[C.RESUMES].delete_one({"_id": existing_in_slot["_id"]})
             
-            # Create resume document
+            # Create resume document with Cloudinary metadata
             resume_doc = {
                 "student_id": ObjectId(student_id),
                 "name": validation['sanitized_name'].split('.')[0],
                 "file_name": unique_filename,
                 "file_type": content_type,
                 "file_size": upload_result['bytes'],
-                "gridfs_file_id": upload_result['file_id'],
+                "cloudinary_url": upload_result['cloudinary_url'],
+                "cloudinary_public_id": upload_result['cloudinary_public_id'],
                 "version": 1,
                 "slot": slot,
                 "is_primary": (slot == "primary"),
@@ -96,8 +111,8 @@ class ResumeService:
             return resume_doc
             
         except Exception as e:
-            if 'upload_result' in locals() and upload_result.get('file_id'):
-                self.gridfs.delete_file(upload_result['file_id'])
+            if 'upload_result' in locals() and upload_result.get('cloudinary_public_id'):
+                self.cloudinary.delete_file(upload_result['cloudinary_public_id'])
             raise StorageError(f"Resume upload failed: {str(e)}")
     
     async def get_student_resumes(self, student_id: str) -> List[Dict[str, Any]]:
@@ -179,9 +194,9 @@ class ResumeService:
         """Delete resume and associated data."""
         resume = await self.get_resume_by_id(resume_id, student_id)
         
-        # Delete from GridFS
-        if resume.get("gridfs_file_id"):
-            self.gridfs.delete_file(resume["gridfs_file_id"])
+        # Delete from Cloudinary Storage
+        if resume.get("cloudinary_public_id"):
+            self.cloudinary.delete_file(resume["cloudinary_public_id"])
         
         # Delete from database
         self.db[C.RESUMES].delete_one({"_id": ObjectId(resume_id)})

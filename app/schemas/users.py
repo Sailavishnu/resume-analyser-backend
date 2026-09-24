@@ -32,6 +32,14 @@ class StudentProfileOut(BaseModel):
     current_streak: int = 0
     longest_streak: int = 0
     resume_visibility: str = "recruiters"
+    # Primary slot
+    primary_resume_url: Optional[str] = None
+    primary_resume_name: Optional[str] = None
+    primary_resume_id: Optional[str] = None
+    # Secondary slot
+    secondary_resume_url: Optional[str] = None
+    secondary_resume_name: Optional[str] = None
+    secondary_resume_id: Optional[str] = None
     updated_at: Optional[datetime] = None
 
 

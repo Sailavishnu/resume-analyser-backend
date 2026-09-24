@@ -103,7 +103,7 @@ class CandidateService:
                 "location": profile.get("location") if profile else None,
                 "target_role": profile.get("target_role") if profile else None,
                 "resume_id": str(app["resume_id"]) if resume else None,
-                "resume_url": f"/api/v1/resumes/{app['resume_id']}/download" if resume else None,
+                "resume_url": resume.get("cloudinary_url", f"/api/v1/resumes/{app['resume_id']}/download") if resume else None,
                 "status": app["status"],
                 "applied_at": app["applied_at"],
                 "overall_score": int(match["overall_score"]) if match else None,
@@ -175,7 +175,7 @@ class CandidateService:
             
             # Resume details
             "resume_id": str(app["resume_id"]) if resume else None,
-            "resume_url": f"/api/v1/resumes/{app['resume_id']}/download" if resume else None,
+            "resume_url": resume.get("cloudinary_url", f"/api/v1/resumes/{app['resume_id']}/download") if resume else None,
             "resume_name": resume.get("name") if resume else None,
             
             # Application details

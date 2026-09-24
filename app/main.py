@@ -120,8 +120,13 @@ async def startup_event():
         print(f"⚠️  FAISS index loading failed: {e}")
         print("   → Semantic job search will be unavailable")
     
+    # Verify Cloudinary Storage config
+    if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
+        print("✅ Cloudinary Storage configuration found")
+    else:
+        print("⚠️  Cloudinary not configured - file uploads will use local fallback")
     
-    print(f"\n🌍 API Documentation: http://{settings.HOST}:{settings.PORT}/docs")
+    print(f"\nAPI Documentation: http://{settings.HOST}:{settings.PORT}/docs")
     print(f"📊 Health Check: http://{settings.HOST}:{settings.PORT}/health")
 
 

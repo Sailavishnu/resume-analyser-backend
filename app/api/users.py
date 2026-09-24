@@ -98,6 +98,17 @@ async def get_student_profile(
     
     profile["id"] = str(profile["_id"])
     
+    # Attach Cloudinary URLs from both resume slots
+    for slot_name, prefix in [("primary", "primary_resume"), ("secondary", "secondary_resume")]:
+        resume = db[C.RESUMES].find_one(
+            {"student_id": ObjectId(current_user["id"]), "slot": slot_name},
+            sort=[("created_at", -1)]
+        )
+        if resume:
+            profile[f"{prefix}_url"] = resume.get("cloudinary_url")
+            profile[f"{prefix}_name"] = resume.get("file_name")
+            profile[f"{prefix}_id"] = str(resume["_id"])
+    
     return DataResponse(data=StudentProfileOut(**profile))
 
 
