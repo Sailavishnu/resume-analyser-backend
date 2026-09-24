@@ -55,16 +55,6 @@ class Settings(BaseModel):
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", str(60 * 24 * 7)))
     
-    # Cloudinary
-    CLOUDINARY_CLOUD_NAME: str = os.getenv("CLOUDINARY_CLOUD_NAME", "")
-    CLOUDINARY_API_KEY: str = os.getenv("CLOUDINARY_API_KEY", "")
-    CLOUDINARY_API_SECRET: str = os.getenv("CLOUDINARY_API_SECRET", "")
-    
-    @property
-    def cloudinary_configured(self) -> bool:
-        """Check if Cloudinary is configured"""
-        return bool(self.CLOUDINARY_CLOUD_NAME and self.CLOUDINARY_API_KEY and self.CLOUDINARY_API_SECRET)
-    
     # Admin Credentials
     ADMIN_ID: str = os.getenv("ADMIN_ID", "admin")
     ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@resumeai.com")

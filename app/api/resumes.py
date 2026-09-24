@@ -7,8 +7,8 @@ from typing import List, Optional
 
 from app.core.dependencies import get_current_user, require_student, get_optional_current_user
 from app.core.config import settings
-from app.db.mongodb import get_database
-from app.db import collections as C
+from app.cloud.mongodb import get_database
+from app.cloud import collections as C
 from app.schemas.common import DataResponse, PaginatedResponse, MessageResponse
 from app.schemas.resumes import (
     ResumeOut, AnalysisStatusOut, ResumeAnalysisOut, 
@@ -212,14 +212,29 @@ async def download_resume(
     current_user: dict = Depends(require_student),
     db: Database = Depends(get_database)
 ):
-    """Generate download URL for resume file."""
+    """Download resume file."""
     resume_service = ResumeService(db)
     
     resume = await resume_service.get_resume_by_id(resume_id, current_user["id"])
     
-    if not resume.get("cloudinary_secure_url"):
+    file_id = resume.get("gridfs_file_id")
+    if not file_id:
         raise HTTPException(status_code=404, detail="Resume file not found")
     
-    # Return redirect to Cloudinary URL
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=resume["cloudinary_secure_url"])
+    from app.cloud.gridfs_service import GridFSService
+    from fastapi.responses import StreamingResponse
+    
+    gridfs_service = GridFSService(db)
+    grid_out = gridfs_service.get_file(file_id)
+    
+    if not grid_out:
+        raise HTTPException(status_code=404, detail="File content not found in GridFS")
+        
+    def iterfile():
+        yield grid_out.read()
+        
+    return StreamingResponse(
+        iterfile(),
+        media_type=resume.get("file_type", "application/pdf"),
+        headers={"Content-Disposition": f'attachment; filename="{resume.get("file_name", "resume.pdf")}"'}
+    )

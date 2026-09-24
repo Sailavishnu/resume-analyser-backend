@@ -10,8 +10,8 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 
 from app.core.dependencies import get_optional_current_user
-from app.db.mongodb import get_database
-from app.db import collections as C
+from app.cloud.mongodb import get_database
+from app.cloud import collections as C
 from app.schemas.common import DataResponse
 from app.services.interview_service import AIInterviewService
 from app.utils.serializers import serialize_mongo_doc

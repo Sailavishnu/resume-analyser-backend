@@ -8,7 +8,7 @@ from pymongo.database import Database
 from typing import List, Optional
 
 from app.core.dependencies import get_current_user, require_student
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse
 from app.schemas.matching import JDMatchRequest, JDMatchOut
 from app.services.jd_match_service import JDMatchService

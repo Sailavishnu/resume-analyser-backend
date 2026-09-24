@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 from datetime import datetime, timedelta
 
 from app.utils.dates import utc_now
-from app.db import collections as C
+from app.cloud import collections as C
 
 
 class AnalyticsService:

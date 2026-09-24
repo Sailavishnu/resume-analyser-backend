@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.database import Database
 
 from app.core.dependencies import get_current_user
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.auth import SignUpRequest, LoginRequest, TokenResponse, RefreshRequest, MeResponse
 from app.schemas.common import DataResponse, MessageResponse
 from app.services.auth_service import AuthService

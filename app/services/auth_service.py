@@ -7,7 +7,7 @@ from pymongo.database import Database
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.dates import utc_now
-from app.db import collections as C
+from app.cloud import collections as C
 
 
 class AuthService:

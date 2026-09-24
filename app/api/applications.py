@@ -6,7 +6,7 @@ from pymongo.database import Database
 from typing import List
 
 from app.core.dependencies import get_current_user, require_student, require_hr
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse, PaginatedResponse, MessageResponse
 from app.schemas.applications import (
     ApplicationCreateRequest, ApplicationUpdateRequest, ApplicationOut,

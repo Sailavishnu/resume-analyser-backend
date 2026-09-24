@@ -8,8 +8,8 @@ from typing import List, Dict, Optional, Tuple
 from bson import ObjectId
 import logging
 
-from app.db.mongodb import get_db
-from app.db.collections import JOBS_COLLECTION, RESUMES_COLLECTION
+from app.cloud.mongodb import get_db
+from app.cloud.collections import JOBS_COLLECTION, RESUMES_COLLECTION
 from app.ml.embeddings import embedding_service, get_resume_embedding, get_job_embedding
 from app.ml.vector_store import get_vector_store
 from app.ml.predictor import predictor
@@ -259,7 +259,7 @@ class SemanticMatchService:
         """
         Generate human-readable match explanation.
         """
-        from app.utils.scoring import analyze_skill_gap
+        from app.ml.scoring import analyze_skill_gap
         
         # Skill analysis
         resume_skills = []

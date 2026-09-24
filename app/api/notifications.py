@@ -6,7 +6,7 @@ from pymongo.database import Database
 from typing import Optional
 
 from app.core.dependencies import get_current_user
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse, PaginatedResponse, MessageResponse
 from app.schemas.notifications import NotificationOut, NotificationUpdateRequest
 from app.services.notification_service import NotificationService

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from pymongo.database import Database
 
 from app.core.dependencies import get_current_user, require_student
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse
 from app.schemas.ats import ATSAnalysisOut
 from app.services.resume_service import ResumeService

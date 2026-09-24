@@ -6,13 +6,13 @@ from pymongo.database import Database
 from bson import ObjectId
 
 from app.core.dependencies import get_current_user, require_student, require_hr, require_admin
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse, MessageResponse
 from app.schemas.users import (
     UserOut, UpdateProfileRequest, StudentProfileOut, 
     UpdateStudentProfileRequest, RecruiterProfileOut, AdminUserListItem
 )
-from app.db import collections as C
+from app.cloud import collections as C
 from app.utils.dates import utc_now
 
 router = APIRouter(prefix="/users", tags=["Users"])

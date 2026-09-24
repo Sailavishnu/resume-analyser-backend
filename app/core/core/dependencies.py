@@ -3,7 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
 
 from app.core.security import decode_access_token
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 
 bearer_scheme = HTTPBearer(auto_error=False)
 

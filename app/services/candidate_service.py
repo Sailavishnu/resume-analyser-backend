@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.utils.pagination import paginate_query, PaginationMeta
-from app.db import collections as C
+from app.cloud import collections as C
 
 
 class CandidateService:
@@ -103,7 +103,7 @@ class CandidateService:
                 "location": profile.get("location") if profile else None,
                 "target_role": profile.get("target_role") if profile else None,
                 "resume_id": str(app["resume_id"]) if resume else None,
-                "resume_url": resume.get("cloudinary_secure_url") if resume else None,
+                "resume_url": f"/api/v1/resumes/{app['resume_id']}/download" if resume else None,
                 "status": app["status"],
                 "applied_at": app["applied_at"],
                 "overall_score": int(match["overall_score"]) if match else None,
@@ -175,7 +175,7 @@ class CandidateService:
             
             # Resume details
             "resume_id": str(app["resume_id"]) if resume else None,
-            "resume_url": resume.get("cloudinary_secure_url") if resume else None,
+            "resume_url": f"/api/v1/resumes/{app['resume_id']}/download" if resume else None,
             "resume_name": resume.get("name") if resume else None,
             
             # Application details

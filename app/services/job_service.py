@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional
 from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
 from app.utils.dates import utc_now
 from app.utils.pagination import paginate_query, PaginationMeta
-from app.db import collections as C
+from app.cloud import collections as C
 
 
 class JobService:

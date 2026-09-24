@@ -6,7 +6,7 @@ from pymongo.database import Database
 from typing import Optional
 
 from app.core.dependencies import require_hr
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse, PaginatedResponse
 from app.schemas.candidates import CandidateOut
 from app.services.candidate_service import CandidateService

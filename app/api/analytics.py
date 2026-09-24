@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from pymongo.database import Database
 
 from app.core.dependencies import require_student, require_hr, require_admin
-from app.db.mongodb import get_database
+from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse
 from app.schemas.analytics import StudentAnalyticsOut, HRAnalyticsOut, AdminAnalyticsOut, MLAnalyticsOut
 from app.services.analytics_service import AnalyticsService

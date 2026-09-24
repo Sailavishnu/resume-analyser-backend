@@ -9,7 +9,7 @@ from datetime import datetime
 from bson import ObjectId
 from pymongo.database import Database
 
-from app.db import collections as C
+from app.cloud import collections as C
 from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError
 from app.utils.dates import utc_now
 from app.ml.interview_engine import ai_interview_engine

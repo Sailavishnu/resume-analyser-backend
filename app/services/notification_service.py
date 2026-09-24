@@ -8,7 +8,7 @@ from typing import Dict, Any, List
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.utils.dates import utc_now
 from app.utils.pagination import paginate_query, PaginationMeta
-from app.db import collections as C
+from app.cloud import collections as C
 
 
 class NotificationService:

@@ -8,8 +8,8 @@ from typing import Dict, Any
 from app.core.exceptions import NotFoundError, ProcessingError
 from app.ml.predictor import predictor
 from app.utils.dates import utc_now
-from app.utils.scoring import analyze_skill_gap
-from app.db import collections as C
+from app.ml.scoring import analyze_skill_gap
+from app.cloud import collections as C
 
 
 class JDMatchService:

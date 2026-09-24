@@ -1,7 +1,7 @@
 """
 Resume AI & Placement Platform - FastAPI Application
 
-Complete backend with MongoDB, Cloudinary, ML model, and comprehensive API.
+Complete backend with MongoDB, ML model, and comprehensive API.
 """
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +19,7 @@ from app.core.exceptions import (
     validation_exception_handler,
     unhandled_exception_handler
 )
-from app.db.mongodb import connect_db, close_db
+from app.cloud.mongodb import connect_db, close_db
 from app.ml.predictor import predictor
 
 # Import all API routers
@@ -120,11 +120,6 @@ async def startup_event():
         print(f"⚠️  FAISS index loading failed: {e}")
         print("   → Semantic job search will be unavailable")
     
-    # Verify Cloudinary config
-    if settings.cloudinary_configured:
-        print("✅ Cloudinary configuration found")
-    else:
-        print("⚠️  Cloudinary not configured - file uploads will fail")
     
     print(f"\n🌍 API Documentation: http://{settings.HOST}:{settings.PORT}/docs")
     print(f"📊 Health Check: http://{settings.HOST}:{settings.PORT}/health")
@@ -216,7 +211,7 @@ async def health_check():
     
     # Check MongoDB connection
     try:
-        from app.db.mongodb import get_db
+        from app.cloud.mongodb import get_db
         db = get_db()
         db.command("ping")
         health_status["components"]["database"] = {
@@ -306,20 +301,6 @@ async def health_check():
         health_status["components"]["vector_search"] = {
             "status": "error",
             "error": str(e)
-        }
-    
-    # Check Cloudinary
-    if settings.cloudinary_configured:
-        health_status["components"]["file_storage"] = {
-            "status": "configured",
-            "type": "Cloudinary",
-            "details": "Credentials available"
-        }
-    else:
-        health_status["components"]["file_storage"] = {
-            "status": "unconfigured",
-            "type": "Cloudinary", 
-            "details": "Upload functionality unavailable"
         }
     
     return health_status
