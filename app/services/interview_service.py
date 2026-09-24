@@ -13,33 +13,39 @@ from app.cloud import collections as C
 from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError
 from app.utils.dates import utc_now
 from app.ml.interview_engine import ai_interview_engine
+from app.ml.gemini_service import gemini_interview_service
 
 
 class AIInterviewService:
     def __init__(self, db: Database):
         self.db = db
         self.engine = ai_interview_engine
+        self.gemini = gemini_interview_service
 
     async def start_interview(
         self,
         student_id: str,
         target_role: str = "Software Engineer",
         interview_type: str = "technical",
-        resume_id: Optional[str] = None
+        resume_id: Optional[str] = None,
+        domain: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Starts a new AI Interview session tailored to candidate's real resume data.
+        Starts a new AI Interview session.
+        If the candidate has uploaded a primary resume:
+            Fetches projects/skills from the primary resume and generates questions (Gemini + RAG).
+        If the candidate has NOT uploaded a primary resume:
+            Generates general domain questions based on candidate's chosen subject/domain using Gemini.
         """
-        # Find candidate primary resume
+        # Look specifically for PRIMARY slot resume
         resume = None
         if resume_id:
             try:
                 resume = self.db[C.RESUMES].find_one({"_id": ObjectId(resume_id), "student_id": ObjectId(student_id)})
             except Exception:
                 pass
-        
+
         if not resume:
-            # Look for PRIMARY slot resume first
             resume = (
                 self.db[C.RESUMES].find_one(
                     {"student_id": ObjectId(student_id), "slot": "primary"},
@@ -49,35 +55,66 @@ class AIInterviewService:
                     {"student_id": ObjectId(student_id), "is_primary": True},
                     sort=[("created_at", -1)]
                 )
-                or self.db[C.RESUMES].find_one(
-                    {"student_id": ObjectId(student_id)},
-                    sort=[("created_at", -1)]
-                )
             )
 
         parsed_data = {}
+        has_primary_resume = False
+        resume_file_name = None
+
         if resume:
             parsed_data = resume.get("parsed_data") or resume.get("parsedData") or {}
+            resume_file_name = resume.get("file_name") or resume.get("filename") or "Primary Resume"
+            has_primary_resume = bool(parsed_data.get("projects") or parsed_data.get("skills") or parsed_data.get("experience"))
 
-        # Fallback if no resume uploaded yet
-        if not parsed_data:
-            parsed_data = {
-                "skills": {"languages": ["JavaScript", "Python"], "frameworks": ["React", "FastAPI"], "tools": ["Git", "Docker"]},
-                "projects": [{"title": "Web Application", "tech_stack": ["React", "Node.js", "MongoDB"]}],
-                "experience": []
-            }
+        questions = None
+        interview_mode = "resume_grounded" if has_primary_resume else "general_domain"
+        chosen_domain = domain or "Fullstack Web Development & System Design"
 
-        # Generate tailored questions
-        questions = self.engine.generate_interview_questions(
-            resume_data=parsed_data,
-            target_role=target_role,
-            total_questions=3
-        )
+        if has_primary_resume:
+            # 1. Primary resume uploaded -> Generate RAG questions with Gemini
+            try:
+                questions = self.gemini.generate_resume_questions(
+                    resume_data=parsed_data,
+                    target_role=target_role,
+                    total_questions=3
+                )
+            except Exception:
+                questions = None
+
+            # Fallback to local RAG engine if Gemini is rate limited or unavailable
+            if not questions:
+                questions = self.engine.generate_interview_questions(
+                    resume_data=parsed_data,
+                    target_role=target_role,
+                    total_questions=3
+                )
+        else:
+            # 2. No primary resume uploaded -> General Domain Interview using Gemini
+            try:
+                questions = self.gemini.generate_general_domain_questions(
+                    domain=chosen_domain,
+                    target_role=target_role,
+                    total_questions=3
+                )
+            except Exception:
+                questions = None
+
+            # Fallback to local questions for the domain
+            if not questions:
+                questions = self.engine.generate_interview_questions(
+                    resume_data={},
+                    target_role=chosen_domain,
+                    total_questions=3
+                )
 
         session_doc = {
             "student_id": ObjectId(student_id),
             "target_role": target_role,
             "interview_type": interview_type,
+            "interview_mode": interview_mode,
+            "has_primary_resume": has_primary_resume,
+            "resume_file_name": resume_file_name,
+            "domain": chosen_domain if not has_primary_resume else None,
             "resume_id": resume["_id"] if resume else None,
             "status": "in_progress",
             "current_question_index": 0,
@@ -92,13 +129,16 @@ class AIInterviewService:
         result = self.db[C.MOCK_INTERVIEWS].insert_one(session_doc)
         session_id = str(result.inserted_id)
 
-        # Format initial question for client
         first_question = questions[0] if questions else None
 
         return {
             "session_id": session_id,
             "interview_id": session_id,
             "target_role": target_role,
+            "interview_mode": interview_mode,
+            "has_primary_resume": has_primary_resume,
+            "resume_file_name": resume_file_name,
+            "domain": chosen_domain if not has_primary_resume else None,
             "status": "in_progress",
             "current_question_index": 0,
             "total_questions": 3,
@@ -169,14 +209,27 @@ class AIInterviewService:
                 if resume:
                     resume_data = resume.get("parsed_data") or resume.get("parsedData") or {}
 
-            # Generate Adaptive Follow-up
-            next_question = self.engine.generate_adaptive_followup(
-                current_question=active_question,
-                answer_text=answer_text,
-                eval_result=eval_result,
-                resume_data=resume_data,
-                next_question_index=next_idx + 1
-            )
+            # Generate Adaptive Follow-up using Gemini with local fallback
+            try:
+                next_question = self.gemini.generate_adaptive_followup(
+                    previous_question=active_question.get("question", ""),
+                    candidate_answer=answer_text,
+                    eval_score=eval_result.get("score", 70),
+                    domain_or_context=active_question.get("category", session.get("target_role", "Software Engineer")),
+                    next_index=next_idx + 1
+                )
+            except Exception:
+                next_question = None
+
+            if not next_question:
+                next_question = self.engine.generate_adaptive_followup(
+                    current_question=active_question,
+                    answer_text=answer_text,
+                    eval_result=eval_result,
+                    resume_data=resume_data,
+                    next_question_index=next_idx + 1,
+                    conversation_history=updated_answers
+                )
             
             # Update questions list in session
             if next_idx < len(questions):

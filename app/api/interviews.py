@@ -24,6 +24,7 @@ class StartInterviewRequest(BaseModel):
     interview_type: Optional[str] = "technical"
     resume_id: Optional[str] = None
     student_id: Optional[str] = None
+    domain: Optional[str] = None
 
 
 class SubmitAnswerRequest(BaseModel):
@@ -44,6 +45,51 @@ async def _resolve_student_id(user: Optional[dict], custom_id: Optional[str], db
     return "65ce00000000000000000001"
 
 
+@router.get("/check-primary-resume", response_model=DataResponse[Dict[str, Any]])
+async def check_primary_resume(
+    student_id: Optional[str] = None,
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db: Database = Depends(get_database)
+):
+    """
+    Check if the student has uploaded their primary resume.
+    Returns status and filename or notification message.
+    """
+    s_id = await _resolve_student_id(current_user, student_id, db)
+    from bson import ObjectId
+    try:
+        student_obj_id = ObjectId(s_id)
+    except Exception:
+        student_obj_id = s_id
+
+    resume = db[C.RESUMES].find_one(
+        {"student_id": student_obj_id, "slot": "primary"},
+        sort=[("created_at", -1)]
+    ) or db[C.RESUMES].find_one(
+        {"student_id": student_obj_id, "is_primary": True},
+        sort=[("created_at", -1)]
+    )
+
+    if resume:
+        return DataResponse(
+            data={
+                "has_primary_resume": True,
+                "resume_id": str(resume["_id"]),
+                "file_name": resume.get("file_name") or resume.get("filename") or "Primary Resume",
+                "cloudinary_url": resume.get("cloudinary_url")
+            },
+            message="Primary resume found."
+        )
+
+    return DataResponse(
+        data={
+            "has_primary_resume": False,
+            "message": "You have not uploaded a primary resume. Would you like to continue with a general interview?"
+        },
+        message="No primary resume uploaded."
+    )
+
+
 @router.post("/start", response_model=DataResponse[Dict[str, Any]])
 async def start_interview_session(
     request: StartInterviewRequest,
@@ -51,7 +97,7 @@ async def start_interview_session(
     db: Database = Depends(get_database)
 ):
     """
-    Start a new AI Mock Interview tailored to the student's uploaded resume.
+    Start a new AI Mock Interview tailored to the student's primary resume or chosen domain.
     """
     student_id = await _resolve_student_id(current_user, request.student_id, db)
     service = AIInterviewService(db)
@@ -59,7 +105,8 @@ async def start_interview_session(
         student_id=student_id,
         target_role=request.target_role or "Software Engineer",
         interview_type=request.interview_type or "technical",
-        resume_id=request.resume_id
+        resume_id=request.resume_id,
+        domain=request.domain
     )
     return DataResponse(
         data=serialize_mongo_doc(result),

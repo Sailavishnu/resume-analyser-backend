@@ -8,6 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+import sys
+import io
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import uvicorn
 
 from app.core.config import settings
@@ -78,54 +87,30 @@ async def startup_event():
         print(f"❌ MongoDB connection failed: {e}")
         raise
     
-    # Load ML model
-    try:
-        predictor.load_model()
-        print("✅ ML model loaded successfully")
-    except Exception as e:
-        print(f"⚠️  ML model loading failed: {e}")
-        print("   → Job matching will be unavailable until model is trained")
-    
-    # Load NLP models (spaCy, Sentence-BERT)
-    print("\n📚 Loading NLP models...")
-    try:
-        from app.ml.nlp_processor import nlp_processor
-        nlp_processor.load()
-        print("✅ spaCy model loaded successfully")
-    except Exception as e:
-        print(f"⚠️  spaCy model loading failed: {e}")
-        print("   → Run: python -m spacy download en_core_web_sm")
-        print("   → Semantic features will be limited")
-    
-    try:
-        from app.ml.embeddings import embedding_service
-        embedding_service.load_model()
-        print("✅ Sentence-BERT model loaded successfully")
-    except Exception as e:
-        print(f"⚠️  Sentence-BERT loading failed: {e}")
-        print("   → Semantic search will be unavailable")
-    
-    # Load FAISS vector index
-    try:
-        from app.ml.vector_store import get_vector_store
-        vector_store = get_vector_store()
-        vector_store.load()
-        if vector_store.is_built():
-            print(f"✅ FAISS index loaded successfully ({vector_store.size()} jobs indexed)")
-        else:
-            print("⚠️  FAISS index not found")
-            print("   → Run: python ml/scripts/build_vector_index.py")
-            print("   → Semantic job search will be unavailable")
-    except Exception as e:
-        print(f"⚠️  FAISS index loading failed: {e}")
-        print("   → Semantic job search will be unavailable")
-    
     # Verify Cloudinary Storage config
     if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
         print("✅ Cloudinary Storage configuration found")
     else:
         print("⚠️  Cloudinary not configured - file uploads will use local fallback")
     
+    # Asynchronous non-blocking model warm-up (fast startup, zero waiting)
+    import asyncio
+    async def _warmup_ml():
+        try:
+            from app.ml.embeddings import embedding_service
+            if not embedding_service.is_loaded:
+                embedding_service.load_model()
+            from app.ml.nlp_processor import nlp_processor
+            nlp_processor.load()
+            from app.ml.vector_store import get_vector_store
+            vector_store = get_vector_store()
+            vector_store.load()
+            print("⚡ ML background models & vector store ready")
+        except Exception as err:
+            print(f"⚠️  ML background warm-up notice: {err}")
+    
+    asyncio.create_task(_warmup_ml())
+
     print(f"\nAPI Documentation: http://{settings.HOST}:{settings.PORT}/docs")
     print(f"📊 Health Check: http://{settings.HOST}:{settings.PORT}/health")
 
@@ -236,13 +221,13 @@ async def health_check():
     if predictor.is_loaded:
         health_status["components"]["ml_model"] = {
             "status": "healthy",
-            "version": predictor.metadata.get("version") if predictor.metadata else "unknown",
-            "details": "Model loaded and ready"
+            "version": getattr(predictor, "version", "2.0-semantic-rag"),
+            "details": "Sentence-BERT Semantic & Conversational RAG Model ready"
         }
     else:
         health_status["components"]["ml_model"] = {
             "status": "unavailable",
-            "details": "Model not loaded - train model first"
+            "details": "Model not loaded"
         }
     
     # Check NLP models
