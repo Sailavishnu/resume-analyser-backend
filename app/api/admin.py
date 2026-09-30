@@ -1,10 +1,10 @@
 """
 Master Admin API Routes.
 
-Provides full administrative control over users, platform content, metrics, and system configuration.
+Provides full administrative control over users, platform content, metrics, system configuration, and PDF report downloads.
 Protected by require_admin dependency.
 """
-from fastapi import APIRouter, Depends, Query, Body
+from fastapi import APIRouter, Depends, Query, Body, Response
 from pymongo.database import Database
 from typing import Optional, Dict, Any
 
@@ -25,6 +25,24 @@ async def get_admin_dashboard(
     admin_service = AdminService(db)
     stats = await admin_service.get_dashboard_metrics()
     return DataResponse(data=stats)
+
+
+@router.get("/reports/pdf")
+async def get_admin_pdf_report(
+    start_date: str = Query("2026-09-01"),
+    end_date: str = Query("2026-09-30"),
+    db: Database = Depends(get_database)
+):
+    """Generate and return native PyMuPDF executive report as direct PDF file download."""
+    admin_service = AdminService(db)
+    pdf_bytes = await admin_service.generate_pdf_report(start_date, end_date)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=Master_Platform_Analysis_{start_date}_to_{end_date}.pdf"
+        }
+    )
 
 
 @router.get("/users", response_model=DataResponse[dict])
