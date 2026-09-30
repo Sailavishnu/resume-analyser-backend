@@ -7,6 +7,12 @@ Creates users, job postings, resumes, applications, and other entities.
 import os
 import sys
 from pathlib import Path
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from datetime import datetime, timedelta
 import random
 from typing import List, Dict, Any
@@ -17,8 +23,8 @@ sys.path.insert(0, str(backend_dir))
 
 from app.core.config import settings
 from app.core.security import get_password_hash
-from app.db.mongodb import connect_db, get_db
-from app.db.collections import *
+from app.cloud.mongodb import connect_db, get_db
+from app.cloud.collections import *
 from app.utils.dates import utc_now
 
 

@@ -1,9 +1,9 @@
 """
 Candidate management API routes for HR users.
 """
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Body
 from pymongo.database import Database
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from app.core.dependencies import require_hr
 from app.cloud.mongodb import get_database
@@ -42,18 +42,41 @@ async def get_job_candidates(
     )
 
 
-@router.get("/{application_id}", response_model=DataResponse[dict])
-async def get_candidate_details(
-    application_id: str,
+@router.post("/screen-domain", response_model=DataResponse[list])
+async def screen_candidates_by_domain(
+    payload: dict = Body(...),
     current_user: dict = Depends(require_hr),
     db: Database = Depends(get_database)
 ):
-    """Get detailed candidate information."""
-    candidate_service = CandidateService(db)
+    """
+    Domain-Aware Knowledge Screening.
+    Inter-linked tool matching (e.g. Cyber Security -> Kali Linux, Metasploit, Wireshark).
+    """
+    domain_query = payload.get("domain", "Cyber Security")
+    min_relevance = payload.get("min_relevance", 40)
     
-    candidate = await candidate_service.get_candidate_details(
+    candidate_service = CandidateService(db)
+    results = await candidate_service.screen_candidates_by_domain(
+        domain_query=domain_query,
+        hr_user_id=current_user["id"],
+        min_relevance=min_relevance
+    )
+    return DataResponse(data=results)
+
+
+@router.patch("/{application_id}/status", response_model=DataResponse[dict])
+async def update_candidate_status(
+    application_id: str,
+    payload: dict = Body(...),
+    current_user: dict = Depends(require_hr),
+    db: Database = Depends(get_database)
+):
+    """Update application stage status (shortlisted, interview_scheduled, rejected, etc.)."""
+    new_status = payload.get("status", "shortlisted")
+    candidate_service = CandidateService(db)
+    res = await candidate_service.update_application_status(
         application_id=application_id,
+        new_status=new_status,
         hr_user_id=current_user["id"]
     )
-    
-    return DataResponse(data=candidate)
+    return DataResponse(data=res)

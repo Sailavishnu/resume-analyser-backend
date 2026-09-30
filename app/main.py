@@ -33,9 +33,10 @@ from app.ml.predictor import predictor
 
 # Import all API routers
 from app.api import (
-    auth, users, resumes, ats, jd_match, jobs, 
+    auth, users, admin, resumes, ats, jd_match, jobs, 
     applications, candidates, notifications, analytics, interviews
 )
+
 
 # ─── FastAPI Application Setup ────────────────────────────────────────────
 
@@ -140,6 +141,9 @@ app.include_router(ats.router, prefix=settings.API_V1_STR)
 app.include_router(jobs.router, prefix=settings.API_V1_STR)
 app.include_router(jd_match.router, prefix=settings.API_V1_STR)
 app.include_router(applications.router, prefix=settings.API_V1_STR)
+
+# Master Admin Console & System Control
+app.include_router(admin.router, prefix=settings.API_V1_STR)
 
 # HR & Candidate Management
 app.include_router(candidates.router, prefix=settings.API_V1_STR)

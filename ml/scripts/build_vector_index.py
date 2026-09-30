@@ -22,8 +22,8 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from app.db.mongodb import connect_db, get_db
-from app.db.collections import JOBS_COLLECTION
+from app.cloud.mongodb import connect_db, get_db
+from app.cloud.collections import JOBS_COLLECTION
 from app.ml.embeddings import embedding_service, get_job_embedding
 from app.ml.vector_store import get_vector_store
 
