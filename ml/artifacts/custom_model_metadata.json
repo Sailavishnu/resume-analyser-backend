@@ -1,0 +1,38 @@
+{
+  "model_type": "CustomRandomForestRegressor",
+  "custom_trained": true,
+  "pre_trained_used": false,
+  "from_scratch": true,
+  "version": "1.0",
+  "features": [
+    "skill_overlap",
+    "required_skill_coverage",
+    "keyword_overlap",
+    "experience_similarity",
+    "education_match",
+    "project_relevance"
+  ],
+  "trained_at": "2026-10-04T11:42:11.695857",
+  "dataset_size": 200,
+  "training_samples": 160,
+  "test_samples": 40,
+  "evaluation_metrics": {
+    "mae": 1.811,
+    "rmse": 2.422,
+    "r2": 0.976
+  },
+  "hyperparameters": {
+    "n_estimators": 20,
+    "max_depth": 6,
+    "min_samples_split": 3
+  },
+  "feature_importance": {
+    "skill_overlap": 0.119,
+    "required_skill_coverage": 0.311,
+    "keyword_overlap": 0.139,
+    "experience_similarity": 0.274,
+    "education_match": 0.0,
+    "project_relevance": 0.156
+  },
+  "notes": "Custom ML model built entirely from scratch without any external ML libraries or pre-trained APIs"
+}
