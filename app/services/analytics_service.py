@@ -1,246 +1,541 @@
 """
-Analytics service for generating platform metrics and insights.
-"""
-from bson import ObjectId
-from pymongo.database import Database
-from typing import Dict, Any, List
-from datetime import datetime, timedelta
+Submission History and Analytics Service
 
-from app.utils.dates import utc_now
-from app.cloud import collections as C
+Provides detailed analytics for user submissions, progress tracking, and performance insights.
+"""
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional
+from bson import ObjectId
+import logging
+from collections import defaultdict
+
+from app.cloud.mongodb import get_db
+from app.cloud.coding_collections import CODE_SUBMISSIONS_COLLECTION, CODING_PROBLEMS_COLLECTION, CODING_STATS_COLLECTION
+from app.models.coding import SubmissionStatus, DifficultyLevel, ProblemCategory
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyticsService:
-    def __init__(self, db: Database):
-        self.db = db
+    """
+    Service for submission analytics and user progress insights.
+    """
     
-    async def get_student_analytics(self, student_id: str) -> Dict[str, Any]:
-        """Get comprehensive analytics for a student."""
-        
-        # Get student profile
-        profile = self.db[C.STUDENT_PROFILES].find_one({"user_id": ObjectId(student_id)})
-        
-        # Application breakdown
-        applications = list(self.db[C.APPLICATIONS].find({"student_id": ObjectId(student_id)}))
-        app_breakdown = {}
-        for status in ["applied", "under_review", "shortlisted", "interview", "offer", "hired", "rejected", "withdrawn"]:
-            app_breakdown[status] = sum(1 for app in applications if app.get("status") == status)
-        
-        # Resume analysis
-        latest_resume = self.db[C.RESUMES].find_one(
-            {"student_id": ObjectId(student_id), "is_current": True}
-        )
-        latest_analysis = None
-        if latest_resume:
-            latest_analysis = self.db[C.RESUME_ANALYSES].find_one(
-                {"resume_id": latest_resume["_id"]},
-                sort=[("created_at", -1)]
-            )
-        
-        # Career readiness history
-        history = list(self.db[C.CAREER_READINESS_HISTORY].find(
-            {"student_id": ObjectId(student_id)}
-        ).sort("created_at", -1).limit(10))
-        
-        career_history = [
-            {
-                "date": h["created_at"].strftime("%Y-%m-%d"),
-                "score": h.get("score", 0)
+    def __init__(self):
+        self.db = None
+    
+    def _get_db(self):
+        if self.db is None:
+            self.db = get_db()
+        return self.db
+    
+    async def get_user_submission_history(
+        self,
+        user_id: str,
+        limit: int = 20,
+        offset: int = 0,
+        status_filter: Optional[SubmissionStatus] = None,
+        problem_id_filter: Optional[str] = None,
+        language_filter: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        Get detailed submission history with filtering and analytics.
+        """
+        try:
+            # Build filter query
+            filter_query = {"user_id": user_id}
+            
+            if status_filter:
+                filter_query["status"] = status_filter.value
+            
+            if problem_id_filter:
+                filter_query["problem_id"] = problem_id_filter
+            
+            if language_filter:
+                filter_query["language"] = language_filter
+            
+            if date_from or date_to:
+                date_filter = {}
+                if date_from:
+                    date_filter["$gte"] = date_from
+                if date_to:
+                    date_filter["$lte"] = date_to
+                filter_query["submitted_at"] = date_filter
+            
+            # Get submissions with problem details
+            pipeline = [
+                {"$match": filter_query},
+                {"$sort": {"submitted_at": -1}},
+                {
+                    "$facet": {
+                        "submissions": [
+                            {"$skip": offset},
+                            {"$limit": limit},
+                            {
+                                "$lookup": {
+                                    "from": CODING_PROBLEMS_COLLECTION,
+                                    "localField": "problem_id",
+                                    "foreignField": "problem_id",
+                                    "as": "problem_info"
+                                }
+                            },
+                            {
+                                "$project": {
+                                    "submission_id": {"$toString": "$_id"},
+                                    "problem_id": 1,
+                                    "problem_title": {"$arrayElemAt": ["$problem_info.title", 0]},
+                                    "difficulty": {"$arrayElemAt": ["$problem_info.difficulty", 0]},
+                                    "category": {"$arrayElemAt": ["$problem_info.category", 0]},
+                                    "language": 1,
+                                    "status": 1,
+                                    "runtime": 1,
+                                    "memory_used": 1,
+                                    "passed_test_cases": 1,
+                                    "total_test_cases": 1,
+                                    "error_message": 1,
+                                    "submitted_at": 1,
+                                    "xp_gained": 1
+                                }
+                            }
+                        ],
+                        "total_count": [{"$count": "count"}],
+                        "analytics": [
+                            {
+                                "$group": {
+                                    "_id": None,
+                                    "total_submissions": {"$sum": 1},
+                                    "accepted_submissions": {
+                                        "$sum": {"$cond": [{"$eq": ["$status", "accepted"]}, 1, 0]}
+                                    },
+                                    "avg_runtime": {"$avg": "$runtime"},
+                                    "languages_used": {"$addToSet": "$language"},
+                                    "problems_attempted": {"$addToSet": "$problem_id"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+            
+            result = await self.db[CODE_SUBMISSIONS_COLLECTION].aggregate(pipeline).to_list(1)
+            
+            if not result:
+                return {
+                    "submissions": [],
+                    "total_count": 0,
+                    "analytics": {
+                        "total_submissions": 0,
+                        "accepted_submissions": 0,
+                        "acceptance_rate": 0.0,
+                        "avg_runtime": 0,
+                        "languages_used": [],
+                        "problems_attempted": 0
+                    }
+                }
+            
+            data = result[0]
+            submissions = data["submissions"]
+            total_count = data["total_count"][0]["count"] if data["total_count"] else 0
+            analytics_data = data["analytics"][0] if data["analytics"] else {}
+            
+            # Calculate analytics
+            total_subs = analytics_data.get("total_submissions", 0)
+            accepted_subs = analytics_data.get("accepted_submissions", 0)
+            acceptance_rate = (accepted_subs / total_subs * 100) if total_subs > 0 else 0.0
+            
+            analytics = {
+                "total_submissions": total_subs,
+                "accepted_submissions": accepted_subs,
+                "acceptance_rate": round(acceptance_rate, 1),
+                "avg_runtime": round(analytics_data.get("avg_runtime", 0), 2),
+                "languages_used": analytics_data.get("languages_used", []),
+                "problems_attempted": len(analytics_data.get("problems_attempted", []))
             }
-            for h in history
-        ]
-        
-        # Interview and assessment counts
-        interview_count = self.db[C.MOCK_INTERVIEWS].count_documents({"student_id": ObjectId(student_id)})
-        assessment_count = self.db[C.ASSESSMENT_ATTEMPTS].count_documents({"student_id": ObjectId(student_id)})
-        
-        return {
-            "student_id": student_id,
-            "career_readiness_score": profile.get("career_readiness_score", 0) if profile else 0,
-            "resume_health_score": latest_analysis.get("overall_score") if latest_analysis else None,
-            "ats_score": latest_analysis.get("ats_score") if latest_analysis else None,
-            "current_streak": profile.get("current_streak", 0) if profile else 0,
-            "longest_streak": profile.get("longest_streak", 0) if profile else 0,
-            "total_applications": len(applications),
-            "total_interviews": interview_count,
-            "total_assessments": assessment_count,
-            "roadmap_progress": 0,  # Would calculate from roadmap
-            "career_history": career_history,
-            "application_breakdown": app_breakdown
-        }
-    
-    async def get_hr_analytics(self, hr_user_id: str) -> Dict[str, Any]:
-        """Get analytics for HR user and their company."""
-        
-        # Get HR profile and company
-        hr_profile = self.db[C.RECRUITER_PROFILES].find_one({"user_id": ObjectId(hr_user_id)})
-        if not hr_profile or not hr_profile.get("company_id"):
-            return {"error": "HR profile or company not found"}
-        
-        company_id = hr_profile["company_id"]
-        
-        # Job metrics
-        jobs = list(self.db[C.JOBS].find({"company_id": company_id}))
-        active_jobs = sum(1 for job in jobs if job.get("status") == "active")
-        
-        # Application metrics
-        job_ids = [job["_id"] for job in jobs]
-        applications = list(self.db[C.APPLICATIONS].find({"job_id": {"$in": job_ids}}))
-        
-        total_applicants = len(applications)
-        shortlisted = sum(1 for app in applications if app.get("status") == "shortlisted")
-        interviewed = sum(1 for app in applications if app.get("status") == "interview")
-        hired = sum(1 for app in applications if app.get("status") == "hired")
-        
-        # Pipeline conversion rates
-        pipeline_metrics = {
-            "applied_to_shortlisted": (shortlisted / total_applicants * 100) if total_applicants > 0 else 0,
-            "shortlisted_to_interviewed": (interviewed / shortlisted * 100) if shortlisted > 0 else 0,
-            "interviewed_to_offered": 0,  # Would calculate from offers
-            "offered_to_hired": 0
-        }
-        
-        # Job-specific metrics
-        job_metrics = []
-        for job in jobs:
-            job_apps = [app for app in applications if app["job_id"] == job["_id"]]
-            job_shortlisted = sum(1 for app in job_apps if app.get("status") == "shortlisted")
-            job_interviewed = sum(1 for app in job_apps if app.get("status") == "interview")
-            job_hired = sum(1 for app in job_apps if app.get("status") == "hired")
             
-            conversion_rate = (job_hired / len(job_apps) * 100) if job_apps else 0
-            
-            job_metrics.append({
-                "job_id": str(job["_id"]),
-                "job_title": job.get("title", ""),
-                "total_applicants": len(job_apps),
-                "shortlisted": job_shortlisted,
-                "interviewed": job_interviewed,
-                "offered": 0,
-                "hired": job_hired,
-                "avg_match_score": None,  # Would calculate from matches
-                "conversion_rate": conversion_rate
-            })
-        
-        return {
-            "recruiter_id": hr_user_id,
-            "company_id": str(company_id),
-            "active_jobs": active_jobs,
-            "total_applicants": total_applicants,
-            "total_shortlisted": shortlisted,
-            "total_interviewed": interviewed,
-            "total_hired": hired,
-            "avg_match_score": None,  # Would calculate from job matches
-            "pipeline_metrics": pipeline_metrics,
-            "job_metrics": job_metrics,
-            "top_skills": []  # Would analyze from applications
-        }
-    
-    async def get_admin_analytics(self) -> Dict[str, Any]:
-        """Get platform-wide analytics for admin."""
-        
-        # User counts
-        total_users = self.db[C.USERS].count_documents({})
-        students = self.db[C.USERS].count_documents({"role": "student"})
-        recruiters = self.db[C.USERS].count_documents({"role": "hr"})
-        companies = self.db[C.COMPANIES].count_documents({})
-        
-        # Job and application counts
-        total_jobs = self.db[C.JOBS].count_documents({})
-        active_jobs = self.db[C.JOBS].count_documents({"status": "active"})
-        total_applications = self.db[C.APPLICATIONS].count_documents({})
-        total_resumes = self.db[C.RESUMES].count_documents({})
-        total_analyses = self.db[C.RESUME_ANALYSES].count_documents({})
-        
-        # User growth (last 30 days)
-        thirty_days_ago = utc_now() - timedelta(days=30)
-        user_growth = []
-        
-        for i in range(7):  # Last 7 periods (4-5 days each)
-            period_start = thirty_days_ago + timedelta(days=i*4)
-            period_end = period_start + timedelta(days=4)
-            
-            period_students = self.db[C.USERS].count_documents({
-                "role": "student",
-                "created_at": {"$gte": period_start, "$lt": period_end}
-            })
-            period_recruiters = self.db[C.USERS].count_documents({
-                "role": "hr", 
-                "created_at": {"$gte": period_start, "$lt": period_end}
-            })
-            
-            user_growth.append({
-                "date": period_start.strftime("%Y-%m-%d"),
-                "students": period_students,
-                "recruiters": period_recruiters,
-                "total": period_students + period_recruiters
-            })
-        
-        # Feature usage (simplified)
-        feature_usage = [
-            {"feature": "Resume Analysis", "usage_count": total_analyses},
-            {"feature": "Job Applications", "usage_count": total_applications},
-            {"feature": "Job Matches", "usage_count": self.db[C.JOB_MATCHES].count_documents({})},
-            {"feature": "Mock Interviews", "usage_count": self.db[C.MOCK_INTERVIEWS].count_documents({})}
-        ]
-        
-        return {
-            "total_users": total_users,
-            "total_students": students,
-            "total_recruiters": recruiters,
-            "total_companies": companies,
-            "total_jobs": total_jobs,
-            "total_applications": total_applications,
-            "total_resumes": total_resumes,
-            "total_analyses": total_analyses,
-            "active_jobs": active_jobs,
-            "user_growth": user_growth,
-            "feature_usage": feature_usage
-        }
-    
-    async def get_ml_analytics(self) -> Dict[str, Any]:
-        """Get ML model usage analytics."""
-        
-        # Match prediction counts
-        total_predictions = self.db[C.JOB_MATCHES].count_documents({})
-        
-        # Score distribution
-        pipeline = [
-            {
-                "$group": {
-                    "_id": {
-                        "$switch": {
-                            "branches": [
-                                {"case": {"$lt": ["$display_score", 50]}, "then": "0-50"},
-                                {"case": {"$lt": ["$display_score", 70]}, "then": "50-70"},
-                                {"case": {"$lt": ["$display_score", 85]}, "then": "70-85"},
-                                {"case": {"$gte": ["$display_score", 85]}, "then": "85-100"}
-                            ],
-                            "default": "unknown"
-                        }
-                    },
-                    "count": {"$sum": 1}
+            return {
+                "submissions": submissions,
+                "total_count": total_count,
+                "analytics": analytics,
+                "filters_applied": {
+                    "status": status_filter.value if status_filter else None,
+                    "problem_id": problem_id_filter,
+                    "language": language_filter,
+                    "date_from": date_from.isoformat() if date_from else None,
+                    "date_to": date_to.isoformat() if date_to else None
                 }
             }
-        ]
+            
+        except Exception as e:
+            logger.error(f"Error getting submission history: {e}")
+            return {"submissions": [], "total_count": 0, "analytics": {}}
+    
+    async def get_user_progress_analytics(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get comprehensive progress analytics for a user.
+        """
+        try:
+            # Get user stats
+            user_stats = await self.db[CODING_STATS_COLLECTION].find_one({"user_id": user_id})
+            if not user_stats:
+                return {"error": "User stats not found"}
+            
+            # Get submission data for last 30 days
+            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+            
+            pipeline = [
+                {
+                    "$match": {
+                        "user_id": user_id,
+                        "submitted_at": {"$gte": thirty_days_ago}
+                    }
+                },
+                {
+                    "$lookup": {
+                        "from": CODING_PROBLEMS_COLLECTION,
+                        "localField": "problem_id",
+                        "foreignField": "problem_id",
+                        "as": "problem_info"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "difficulty": {"$arrayElemAt": ["$problem_info.difficulty", 0]},
+                        "category": {"$arrayElemAt": ["$problem_info.category", 0]}
+                    }
+                },
+                {
+                    "$facet": {
+                        "daily_activity": [
+                            {
+                                "$group": {
+                                    "_id": {
+                                        "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$submitted_at"}},
+                                        "status": "$status"
+                                    },
+                                    "count": {"$sum": 1}
+                                }
+                            },
+                            {"$sort": {"_id.date": 1}}
+                        ],
+                        "difficulty_breakdown": [
+                            {
+                                "$group": {
+                                    "_id": {"difficulty": "$difficulty", "status": "$status"},
+                                    "count": {"$sum": 1}
+                                }
+                            }
+                        ],
+                        "category_performance": [
+                            {
+                                "$group": {
+                                    "_id": {"category": "$category", "status": "$status"},
+                                    "count": {"$sum": 1},
+                                    "avg_runtime": {"$avg": "$runtime"}
+                                }
+                            }
+                        ],
+                        "language_usage": [
+                            {
+                                "$group": {
+                                    "_id": {"language": "$language", "status": "$status"},
+                                    "count": {"$sum": 1}
+                                }
+                            }
+                        ],
+                        "runtime_trends": [
+                            {
+                                "$match": {"status": "accepted"}
+                            },
+                            {
+                                "$group": {
+                                    "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$submitted_at"}},
+                                    "avg_runtime": {"$avg": "$runtime"},
+                                    "submissions": {"$sum": 1}
+                                }
+                            },
+                            {"$sort": {"_id": 1}}
+                        ]
+                    }
+                }
+            ]
+            
+            result = await self.db[CODE_SUBMISSIONS_COLLECTION].aggregate(pipeline).to_list(1)
+            
+            if not result:
+                return {"error": "No submission data found"}
+            
+            data = result[0]
+            
+            # Process daily activity
+            daily_activity = self._process_daily_activity(data["daily_activity"])
+            
+            # Process difficulty breakdown
+            difficulty_stats = self._process_difficulty_breakdown(data["difficulty_breakdown"])
+            
+            # Process category performance
+            category_stats = self._process_category_performance(data["category_performance"])
+            
+            # Process language usage
+            language_stats = self._process_language_usage(data["language_usage"])
+            
+            # Process runtime trends
+            runtime_trends = data["runtime_trends"]
+            
+            # Calculate overall metrics
+            total_problems_solved = user_stats.get("total_problems_solved", 0)
+            current_streak = user_stats.get("current_streak", 0)
+            max_streak = user_stats.get("max_streak", 0)
+            
+            return {
+                "overview": {
+                    "total_xp": user_stats.get("total_xp", 0),
+                    "current_rank": user_stats.get("current_rank", "newbie"),
+                    "problems_solved": total_problems_solved,
+                    "current_streak": current_streak,
+                    "max_streak": max_streak,
+                    "acceptance_rate": round(user_stats.get("acceptance_rate", 0) * 100, 1)
+                },
+                "daily_activity": daily_activity,
+                "difficulty_breakdown": difficulty_stats,
+                "category_performance": category_stats,
+                "language_usage": language_stats,
+                "runtime_trends": runtime_trends,
+                "achievements": [
+                    {
+                        "id": achievement["id"],
+                        "title": achievement["title"],
+                        "description": achievement["description"],
+                        "icon": achievement["icon"],
+                        "unlocked_at": achievement["unlocked_at"]
+                    }
+                    for achievement in user_stats.get("achievements", [])
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting user progress analytics: {e}")
+            return {"error": str(e)}
+    
+    async def get_problem_analytics(self, problem_id: str) -> Dict[str, Any]:
+        """
+        Get analytics for a specific problem.
+        """
+        try:
+            # Get problem details
+            problem = await self.db[CODING_PROBLEMS_COLLECTION].find_one({"problem_id": problem_id})
+            if not problem:
+                return {"error": "Problem not found"}
+            
+            # Get submission analytics
+            pipeline = [
+                {"$match": {"problem_id": problem_id}},
+                {
+                    "$facet": {
+                        "status_breakdown": [
+                            {
+                                "$group": {
+                                    "_id": "$status",
+                                    "count": {"$sum": 1}
+                                }
+                            }
+                        ],
+                        "language_performance": [
+                            {
+                                "$group": {
+                                    "_id": "$language",
+                                    "total_submissions": {"$sum": 1},
+                                    "accepted_submissions": {
+                                        "$sum": {"$cond": [{"$eq": ["$status", "accepted"]}, 1, 0]}
+                                    },
+                                    "avg_runtime": {"$avg": "$runtime"}
+                                }
+                            }
+                        ],
+                        "runtime_distribution": [
+                            {"$match": {"status": "accepted"}},
+                            {
+                                "$bucket": {
+                                    "groupBy": "$runtime",
+                                    "boundaries": [0, 100, 500, 1000, 2000, 5000, float('inf')],
+                                    "default": "Other",
+                                    "output": {"count": {"$sum": 1}}
+                                }
+                            }
+                        ],
+                        "daily_submissions": [
+                            {
+                                "$group": {
+                                    "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$submitted_at"}},
+                                    "submissions": {"$sum": 1},
+                                    "accepted": {"$sum": {"$cond": [{"$eq": ["$status", "accepted"]}, 1, 0]}}
+                                }
+                            },
+                            {"$sort": {"_id": -1}},
+                            {"$limit": 30}
+                        ]
+                    }
+                }
+            ]
+            
+            result = await self.db[CODE_SUBMISSIONS_COLLECTION].aggregate(pipeline).to_list(1)
+            
+            if not result:
+                analytics_data = {
+                    "status_breakdown": [],
+                    "language_performance": [],
+                    "runtime_distribution": [],
+                    "daily_submissions": []
+                }
+            else:
+                analytics_data = result[0]
+            
+            # Calculate overall stats
+            total_submissions = problem.get("total_submissions", 0)
+            successful_submissions = problem.get("successful_submissions", 0)
+            acceptance_rate = (successful_submissions / total_submissions * 100) if total_submissions > 0 else 0.0
+            
+            return {
+                "problem_info": {
+                    "problem_id": problem["problem_id"],
+                    "title": problem["title"],
+                    "difficulty": problem["difficulty"],
+                    "category": problem["category"],
+                    "tags": problem.get("tags", []),
+                    "total_submissions": total_submissions,
+                    "successful_submissions": successful_submissions,
+                    "acceptance_rate": round(acceptance_rate, 1)
+                },
+                "status_breakdown": analytics_data["status_breakdown"],
+                "language_performance": [
+                    {
+                        "language": lang_data["_id"],
+                        "total_submissions": lang_data["total_submissions"],
+                        "accepted_submissions": lang_data["accepted_submissions"],
+                        "acceptance_rate": round(
+                            (lang_data["accepted_submissions"] / lang_data["total_submissions"] * 100)
+                            if lang_data["total_submissions"] > 0 else 0, 1
+                        ),
+                        "avg_runtime": round(lang_data["avg_runtime"], 2) if lang_data["avg_runtime"] else 0
+                    }
+                    for lang_data in analytics_data["language_performance"]
+                ],
+                "runtime_distribution": analytics_data["runtime_distribution"],
+                "daily_submissions": analytics_data["daily_submissions"]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting problem analytics: {e}")
+            return {"error": str(e)}
+    
+    def _process_daily_activity(self, daily_data: List[Dict]) -> List[Dict[str, Any]]:
+        """Process daily activity data for visualization."""
+        activity_map = defaultdict(lambda: {"date": "", "accepted": 0, "failed": 0, "total": 0})
         
-        distribution_result = list(self.db[C.JOB_MATCHES].aggregate(pipeline))
-        prediction_distribution = {item["_id"]: item["count"] for item in distribution_result}
+        for item in daily_data:
+            date = item["_id"]["date"]
+            status = item["_id"]["status"]
+            count = item["count"]
+            
+            activity_map[date]["date"] = date
+            if status == "accepted":
+                activity_map[date]["accepted"] = count
+            else:
+                activity_map[date]["failed"] += count
+            activity_map[date]["total"] += count
         
-        # Feature importance (from latest model metadata - would be loaded from ML service)
-        feature_importance = {
-            "skill_overlap": 0.25,
-            "required_skill_coverage": 0.23,
-            "experience_similarity": 0.18,
-            "project_relevance": 0.16,
-            "keyword_overlap": 0.12,
-            "education_match": 0.06
+        return sorted(list(activity_map.values()), key=lambda x: x["date"])
+    
+    def _process_difficulty_breakdown(self, difficulty_data: List[Dict]) -> Dict[str, Any]:
+        """Process difficulty breakdown data."""
+        stats = {
+            "easy": {"attempted": 0, "solved": 0, "accuracy": 0.0},
+            "medium": {"attempted": 0, "solved": 0, "accuracy": 0.0},
+            "hard": {"attempted": 0, "solved": 0, "accuracy": 0.0}
         }
         
-        return {
-            "model_version": "1.0",
-            "total_predictions": total_predictions,
-            "avg_confidence": None,  # Would calculate from confidence scores
-            "prediction_distribution": prediction_distribution,
-            "feature_importance": feature_importance
-        }
+        for item in difficulty_data:
+            difficulty = item["_id"]["difficulty"]
+            status = item["_id"]["status"]
+            count = item["count"]
+            
+            if difficulty in stats:
+                stats[difficulty]["attempted"] += count
+                if status == "accepted":
+                    stats[difficulty]["solved"] += count
+        
+        # Calculate accuracy
+        for difficulty in stats:
+            if stats[difficulty]["attempted"] > 0:
+                stats[difficulty]["accuracy"] = round(
+                    stats[difficulty]["solved"] / stats[difficulty]["attempted"] * 100, 1
+                )
+        
+        return stats
+    
+    def _process_category_performance(self, category_data: List[Dict]) -> Dict[str, Any]:
+        """Process category performance data."""
+        category_stats = defaultdict(lambda: {"attempted": 0, "solved": 0, "avg_runtime": 0})
+        
+        for item in category_data:
+            category = item["_id"]["category"]
+            status = item["_id"]["status"]
+            count = item["count"]
+            avg_runtime = item.get("avg_runtime", 0)
+            
+            if category:
+                category_stats[category]["attempted"] += count
+                if status == "accepted":
+                    category_stats[category]["solved"] += count
+                    category_stats[category]["avg_runtime"] = avg_runtime
+        
+        # Convert to list format with accuracy calculation
+        result = []
+        for category, stats in category_stats.items():
+            accuracy = (stats["solved"] / stats["attempted"] * 100) if stats["attempted"] > 0 else 0
+            result.append({
+                "category": category,
+                "attempted": stats["attempted"],
+                "solved": stats["solved"],
+                "accuracy": round(accuracy, 1),
+                "avg_runtime": round(stats["avg_runtime"], 2)
+            })
+        
+        return sorted(result, key=lambda x: x["solved"], reverse=True)
+    
+    def _process_language_usage(self, language_data: List[Dict]) -> List[Dict[str, Any]]:
+        """Process language usage data."""
+        language_stats = defaultdict(lambda: {"attempted": 0, "solved": 0})
+        
+        for item in language_data:
+            language = item["_id"]["language"]
+            status = item["_id"]["status"]
+            count = item["count"]
+            
+            language_stats[language]["attempted"] += count
+            if status == "accepted":
+                language_stats[language]["solved"] += count
+        
+        # Convert to list format
+        result = []
+        for language, stats in language_stats.items():
+            accuracy = (stats["solved"] / stats["attempted"] * 100) if stats["attempted"] > 0 else 0
+            result.append({
+                "language": language,
+                "attempted": stats["attempted"],
+                "solved": stats["solved"],
+                "accuracy": round(accuracy, 1)
+            })
+        
+        return sorted(result, key=lambda x: x["attempted"], reverse=True)
+
+
+# Global service instance - will be initialized when needed
+analytics_service = None
+
+def get_analytics_service():
+    global analytics_service
+    if analytics_service is None:
+        analytics_service = AnalyticsService()
+    return analytics_service

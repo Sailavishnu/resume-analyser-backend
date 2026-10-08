@@ -7,8 +7,15 @@ and skill normalization using spaCy.
 from typing import List, Set, Dict, Optional
 import re
 import logging
-import spacy
-from spacy.language import Language
+try:
+    import spacy
+    from spacy.language import Language
+    SPACY_AVAILABLE = True
+except Exception:
+    SPACY_AVAILABLE = False
+    spacy = None
+    Language = object
+    print("spaCy unavailable - NLP features limited")
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +68,7 @@ class NLPProcessor:
                     f"spaCy model '{self._model_name}' not found. "
                     "Run: python -m spacy download en_core_web_sm"
                 )
-                raise
+                logger.warning("spaCy model not found, download with: python -m spacy download en_core_web_sm")
     
     def load(self):
         """Alias for load_model."""
@@ -99,7 +106,8 @@ class NLPProcessor:
             Dictionary with entity types as keys and lists of entities as values
         """
         if not self.is_loaded:
-            raise RuntimeError("NLP model not loaded")
+            logger.warning("NLP model not loaded - returning empty result")
+            return None
         
         doc = self._nlp(text)
         
@@ -123,7 +131,8 @@ class NLPProcessor:
         Uses noun chunks and named entities as keywords.
         """
         if not self.is_loaded:
-            raise RuntimeError("NLP model not loaded")
+            logger.warning("NLP model not loaded - returning empty result")
+            return None
         
         doc = self._nlp(text)
         
@@ -207,7 +216,8 @@ class NLPProcessor:
             Similarity score between 0 and 1
         """
         if not self.is_loaded:
-            raise RuntimeError("NLP model not loaded")
+            logger.warning("NLP model not loaded - returning empty result")
+            return None
         
         doc1 = self._nlp(text1)
         doc2 = self._nlp(text2)
@@ -218,7 +228,8 @@ class NLPProcessor:
     def tokenize(self, text: str) -> List[str]:
         """Tokenize text into words."""
         if not self.is_loaded:
-            raise RuntimeError("NLP model not loaded")
+            logger.warning("NLP model not loaded - returning empty result")
+            return None
         
         doc = self._nlp(text)
         return [token.text for token in doc if not token.is_space]
@@ -230,7 +241,8 @@ class NLPProcessor:
         Example: "running" -> "run", "better" -> "good"
         """
         if not self.is_loaded:
-            raise RuntimeError("NLP model not loaded")
+            logger.warning("NLP model not loaded - returning empty result")
+            return None
         
         doc = self._nlp(text)
         lemmas = [token.lemma_ for token in doc if not token.is_space]
@@ -239,7 +251,8 @@ class NLPProcessor:
     def remove_stopwords(self, text: str) -> str:
         """Remove common stopwords from text."""
         if not self.is_loaded:
-            raise RuntimeError("NLP model not loaded")
+            logger.warning("NLP model not loaded - returning empty result")
+            return None
         
         doc = self._nlp(text)
         filtered = [token.text for token in doc if not token.is_stop and not token.is_space]

@@ -14,6 +14,10 @@ from pymongo import MongoClient
 from pymongo.database import Database
 from app.core.config import settings
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 _client: MongoClient | None = None
 _db: Database | None = None
 
@@ -27,6 +31,7 @@ def connect_db() -> None:
     _db = _client[db_name]
     # Ping to validate connection early
     _client.admin.command("ping")
+    logger.info(f"Connected to MongoDB: {db_name}")
 
 
 def close_db() -> None:

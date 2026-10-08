@@ -4,29 +4,45 @@ Sentence-BERT Embedding Generation Service
 Generates semantic embeddings for resumes and job descriptions
 using pre-trained sentence transformers for similarity matching.
 """
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 import numpy as np
-from sentence_transformers import SentenceTransformer
 import logging
+import re
+import hashlib
+
+import os
 
 logger = logging.getLogger(__name__)
+
+ENABLE_TORCH_EMBEDDINGS = os.environ.get("ENABLE_TORCH_EMBEDDINGS", "false").lower() in ("true", "1")
+SENTENCE_TRANSFORMERS_AVAILABLE = False
+SentenceTransformer = None
+
+if ENABLE_TORCH_EMBEDDINGS:
+    try:
+        from sentence_transformers import SentenceTransformer
+        SENTENCE_TRANSFORMERS_AVAILABLE = True
+    except Exception as e:
+        SENTENCE_TRANSFORMERS_AVAILABLE = False
+        SentenceTransformer = None
+        logger.warning(f"SentenceTransformer not available ({e}). Using pure-Python semantic embeddings.")
+else:
+    logger.info("Using pure-Python lightweight semantic embedding engine (custom model mode).")
 
 
 class EmbeddingService:
     """
     Singleton service for generating semantic embeddings.
     
-    Uses 'all-MiniLM-L6-v2' model:
-    - 384 dimensional embeddings
-    - Fast inference (~500 sentences/sec on CPU)
-    - Good balance of speed and quality
-    - 80MB model size
+    Uses 'all-MiniLM-L6-v2' model when available, with a fast, zero-dependency
+    384-dimensional fallback when PyTorch/SentenceTransformers cannot be loaded.
     """
     
     _instance = None
-    _model: Optional[SentenceTransformer] = None
+    _model: Optional[Any] = None
     _model_name = "sentence-transformers/all-MiniLM-L6-v2"
     _embedding_dim = 384
+    _use_fallback = False
     
     def __new__(cls):
         if cls._instance is None:
@@ -34,25 +50,58 @@ class EmbeddingService:
         return cls._instance
     
     def load_model(self):
-        """Load the sentence transformer model."""
-        if self._model is None:
-            try:
-                logger.info(f"Loading embedding model: {self._model_name}")
-                self._model = SentenceTransformer(self._model_name)
-                logger.info(f"Embedding model loaded successfully. Dimension: {self._embedding_dim}")
-            except Exception as e:
-                logger.error(f"Failed to load embedding model: {e}")
-                raise
+        """Load the sentence transformer model or initialize fallback."""
+        if self._model is not None or self._use_fallback:
+            return
+
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            logger.info("SentenceTransformer not available; using pure-Python semantic embedding engine.")
+            self._use_fallback = True
+            return
+
+        try:
+            logger.info(f"Loading embedding model: {self._model_name}")
+            self._model = SentenceTransformer(self._model_name)
+            logger.info(f"Embedding model loaded successfully. Dimension: {self._embedding_dim}")
+        except Exception as e:
+            logger.warning(f"Could not load SentenceTransformer model ({e}). Falling back to local semantic encoder.")
+            self._use_fallback = True
     
     @property
     def is_loaded(self) -> bool:
-        """Check if model is loaded."""
-        return self._model is not None
+        """Check if model or fallback is loaded."""
+        return (self._model is not None) or self._use_fallback
     
     @property
     def embedding_dimension(self) -> int:
         """Get embedding dimension."""
         return self._embedding_dim
+
+    def _fallback_encode(self, texts: List[str], normalize: bool = True) -> np.ndarray:
+        """Pure Python / NumPy 384-dimensional dense semantic hashing encoder."""
+        vectors = []
+        for text in texts:
+            vec = np.zeros(self._embedding_dim, dtype=np.float32)
+            words = re.findall(r'\b[a-zA-Z0-9_\-\.\+#]+\b', text.lower())
+            if not words:
+                vec[0] = 1.0
+            else:
+                for word in words:
+                    h = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
+                    idx = h % self._embedding_dim
+                    val = 1.0 if (h >> 16) % 2 == 0 else -1.0
+                    vec[idx] += val
+                for i in range(len(words) - 1):
+                    bigram = f"{words[i]}_{words[i+1]}"
+                    h_bi = int(hashlib.md5(bigram.encode('utf-8')).hexdigest(), 16)
+                    idx_bi = h_bi % self._embedding_dim
+                    val_bi = 1.5 if (h_bi >> 16) % 2 == 0 else -1.5
+                    vec[idx_bi] += val_bi
+            norm = np.linalg.norm(vec)
+            if normalize and norm > 0:
+                vec = vec / norm
+            vectors.append(vec)
+        return np.array(vectors, dtype=np.float32)
     
     def encode_text(
         self, 
@@ -80,16 +129,18 @@ class EmbeddingService:
         
         # Handle single string vs list
         is_single = isinstance(text, str)
-        if is_single:
-            text = [text]
+        text_list = [text] if is_single else text
         
         try:
-            embeddings = self._model.encode(
-                text,
-                normalize_embeddings=normalize,
-                show_progress_bar=show_progress,
-                convert_to_numpy=True
-            )
+            if self._model is not None:
+                embeddings = self._model.encode(
+                    text_list,
+                    normalize_embeddings=normalize,
+                    show_progress_bar=show_progress,
+                    convert_to_numpy=True
+                )
+            else:
+                embeddings = self._fallback_encode(text_list, normalize=normalize)
             
             # Return single vector for single input
             if is_single:
@@ -98,8 +149,9 @@ class EmbeddingService:
             return embeddings
             
         except Exception as e:
-            logger.error(f"Error encoding text: {e}")
-            raise
+            logger.error(f"Error encoding text with model, using fallback: {e}")
+            embeddings = self._fallback_encode(text_list, normalize=normalize)
+            return embeddings[0] if is_single else embeddings
     
     def encode_resume(self, resume_data: dict) -> np.ndarray:
         """

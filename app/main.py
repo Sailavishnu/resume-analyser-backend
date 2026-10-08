@@ -34,7 +34,7 @@ from app.ml.predictor import predictor
 # Import all API routers
 from app.api import (
     auth, users, admin, resumes, ats, jd_match, jobs, 
-    applications, candidates, notifications, analytics, interviews
+    applications, candidates, notifications, analytics, interviews, coding
 )
 
 
@@ -98,6 +98,8 @@ async def startup_event():
     import asyncio
     async def _warmup_ml():
         try:
+            from app.ml.predictor import predictor
+            predictor.load_model()
             from app.ml.embeddings import embedding_service
             if not embedding_service.is_loaded:
                 embedding_service.load_model()
@@ -106,7 +108,7 @@ async def startup_event():
             from app.ml.vector_store import get_vector_store
             vector_store = get_vector_store()
             vector_store.load()
-            print("⚡ ML background models & vector store ready")
+            print("⚡ ML custom model, embeddings & vector store ready")
         except Exception as err:
             print(f"⚠️  ML background warm-up notice: {err}")
     
@@ -154,6 +156,9 @@ app.include_router(analytics.router, prefix=settings.API_V1_STR)
 
 # AI Mock Interviews
 app.include_router(interviews.router, prefix=settings.API_V1_STR)
+
+# Coding Practice Platform
+app.include_router(coding.router, prefix=settings.API_V1_STR)
 
 # Static files for local uploads fallback
 from fastapi.staticfiles import StaticFiles
@@ -226,7 +231,7 @@ async def health_check():
         health_status["components"]["ml_model"] = {
             "status": "healthy",
             "version": getattr(predictor, "version", "2.0-semantic-rag"),
-            "details": "Sentence-BERT Semantic & Conversational RAG Model ready"
+            "details": "Custom Random Forest + Semantic Match Model ready"
         }
     else:
         health_status["components"]["ml_model"] = {

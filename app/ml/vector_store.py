@@ -4,25 +4,32 @@ FAISS Vector Database Manager
 Manages semantic search index for jobs using FAISS (Facebook AI Similarity Search).
 Supports adding, searching, and persisting job embeddings.
 """
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import numpy as np
-import faiss
 import pickle
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+ENABLE_FAISS = os.environ.get("ENABLE_FAISS", "false").lower() in ("true", "1")
+FAISS_AVAILABLE = False
+faiss = None
+
+if ENABLE_FAISS:
+    try:
+        import faiss
+        FAISS_AVAILABLE = True
+    except Exception as e:
+        logger.warning(f"FAISS not available or blocked by system policy ({e}). Using NumPy vector search.")
+
 
 class VectorStore:
     """
-    FAISS-based vector store for semantic job search.
-    
-    Features:
-    - Fast similarity search (L2 or cosine)
-    - Persistent storage
-    - Metadata storage (job IDs and details)
-    - Batch operations
+    Resilient Vector Store for semantic job search.
+    Supports FAISS when available, with an automatic, zero-dependency 
+    pure-NumPy fallback (immune to Windows Security DLL blocks).
     """
     
     def __init__(
@@ -32,15 +39,6 @@ class VectorStore:
         index_path: Optional[str] = None,
         metadata_path: Optional[str] = None
     ):
-        """
-        Initialize vector store.
-        
-        Args:
-            embedding_dim: Dimension of embedding vectors (384 for MiniLM)
-            index_type: FAISS index type ('flat' for exact search, 'ivf' for approximate)
-            index_path: Path to FAISS index file
-            metadata_path: Path to metadata pickle file
-        """
         self.embedding_dim = embedding_dim
         self.index_type = index_type
         
@@ -48,9 +46,11 @@ class VectorStore:
         artifacts_dir = backend_root / "ml" / "artifacts"
         self.index_path = str(index_path or (artifacts_dir / "job_vectors.index"))
         self.metadata_path = str(metadata_path or (artifacts_dir / "job_vectors.pkl"))
+        self.npy_path = str(artifacts_dir / "job_vectors.npy")
         
-        # FAISS index
-        self.index: Optional[faiss.Index] = None
+        # FAISS index (optional) and NumPy matrix storage
+        self.index: Optional[Any] = None
+        self.vectors: np.ndarray = np.empty((0, self.embedding_dim), dtype=np.float32)
         
         # Metadata storage (maps index position to job data)
         self.job_ids: List[str] = []  # Job IDs in order
@@ -60,18 +60,21 @@ class VectorStore:
         self._initialize_index()
     
     def _initialize_index(self):
-        """Initialize FAISS index based on type."""
-        if self.index_type == "flat":
-            # Exact search using L2 distance (after normalization, equivalent to cosine)
-            self.index = faiss.IndexFlatIP(self.embedding_dim)  # IP = Inner Product
-        elif self.index_type == "ivf":
-            # Approximate search for larger datasets
-            quantizer = faiss.IndexFlatIP(self.embedding_dim)
-            self.index = faiss.IndexIVFFlat(quantizer, self.embedding_dim, 100)
-        else:
-            raise ValueError(f"Unknown index type: {self.index_type}")
+        """Initialize FAISS index if available."""
+        if FAISS_AVAILABLE and faiss is not None:
+            try:
+                if self.index_type == "flat":
+                    self.index = faiss.IndexFlatIP(self.embedding_dim)
+                elif self.index_type == "ivf":
+                    quantizer = faiss.IndexFlatIP(self.embedding_dim)
+                    self.index = faiss.IndexIVFFlat(quantizer, self.embedding_dim, 100)
+                logger.info(f"Initialized FAISS index: {self.index_type}, dim={self.embedding_dim}")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to initialize FAISS index ({e}). Using NumPy.")
         
-        logger.info(f"Initialized FAISS index: {self.index_type}, dim={self.embedding_dim}")
+        self.index = None
+        logger.info(f"Initialized NumPy vector engine: dim={self.embedding_dim}")
     
     def add_job(self, job_id: str, embedding: np.ndarray, metadata: dict):
         """
@@ -86,12 +89,21 @@ class VectorStore:
             logger.warning(f"Job {job_id} already exists. Skipping.")
             return
         
-        # Ensure embedding is 2D for FAISS
-        if embedding.ndim == 1:
-            embedding = embedding.reshape(1, -1)
+        # Ensure embedding is 2D
+        emb_2d = embedding.reshape(1, -1).astype(np.float32) if embedding.ndim == 1 else embedding.astype(np.float32)
         
-        # Add to FAISS index
-        self.index.add(embedding.astype(np.float32))
+        # Add to vectors
+        if len(self.vectors) == 0:
+            self.vectors = emb_2d
+        else:
+            self.vectors = np.vstack([self.vectors, emb_2d])
+
+        # Add to FAISS index if available
+        if self.index is not None:
+            try:
+                self.index.add(emb_2d)
+            except Exception as e:
+                logger.warning(f"FAISS add warning: {e}")
         
         # Store metadata
         self.job_ids.append(job_id)
@@ -131,9 +143,18 @@ class VectorStore:
             logger.info("No new jobs to add")
             return
         
-        # Add to FAISS
         embeddings_array = np.array(new_embeddings, dtype=np.float32)
-        self.index.add(embeddings_array)
+        if len(self.vectors) == 0:
+            self.vectors = embeddings_array
+        else:
+            self.vectors = np.vstack([self.vectors, embeddings_array])
+
+        # Add to FAISS if available
+        if self.index is not None:
+            try:
+                self.index.add(embeddings_array)
+            except Exception as e:
+                logger.warning(f"FAISS batch add warning: {e}")
         
         # Store metadata
         self.job_ids.extend(new_jobs)
@@ -159,38 +180,36 @@ class VectorStore:
         Returns:
             List of (job_id, similarity_score, metadata) tuples, sorted by similarity
         """
-        if self.index.ntotal == 0:
+        total_items = len(self.vectors) if self.index is None else self.index.ntotal
+        if total_items == 0:
             logger.warning("Vector store is empty")
             return []
         
-        # Ensure query is 2D
-        if query_embedding.ndim == 1:
-            query_embedding = query_embedding.reshape(1, -1)
+        search_k = min(top_k * 3, total_items)
+        flat_query = query_embedding.flatten().astype(np.float32)
         
-        # Search in FAISS
-        # We request more results than top_k to account for filtering
-        search_k = min(top_k * 3, self.index.ntotal)
-        distances, indices = self.index.search(
-            query_embedding.astype(np.float32), 
-            search_k
-        )
+        if self.index is not None:
+            distances, indices = self.index.search(flat_query.reshape(1, -1), search_k)
+            pairs = zip(distances[0], indices[0])
+        else:
+            scores = np.dot(self.vectors, flat_query)
+            top_idx = np.argsort(scores)[::-1][:search_k]
+            pairs = zip(scores[top_idx], top_idx)
         
         # Convert results to list of tuples
         results = []
-        for dist, idx in zip(distances[0], indices[0]):
-            if idx == -1:  # No more results
+        for dist, idx in pairs:
+            if idx == -1 or idx >= len(self.job_ids):
                 break
             
             job_id = self.job_ids[idx]
-            metadata = self.job_metadata[job_id]
+            metadata = self.job_metadata.get(job_id, {})
             
             # Apply filter if provided
             if filter_fn and not filter_fn(metadata):
                 continue
             
-            # Distance is inner product (higher = more similar)
             similarity_score = float(dist)
-            
             results.append((job_id, similarity_score, metadata))
             
             if len(results) >= top_k:
@@ -267,8 +286,15 @@ class VectorStore:
             Path(target_index_path).parent.mkdir(parents=True, exist_ok=True)
             Path(target_metadata_path).parent.mkdir(parents=True, exist_ok=True)
             
-            # Save FAISS index
-            faiss.write_index(self.index, target_index_path)
+            # Save FAISS index if available
+            if FAISS_AVAILABLE and faiss is not None and self.index is not None:
+                try:
+                    faiss.write_index(self.index, target_index_path)
+                except Exception as e:
+                    logger.warning(f"FAISS write warning: {e}")
+            
+            if len(self.vectors) > 0:
+                np.save(self.npy_path, self.vectors)
             
             # Save metadata
             metadata = {
@@ -296,14 +322,25 @@ class VectorStore:
         target_index_path = index_path or self.index_path
         target_metadata_path = metadata_path or self.metadata_path
         
-        if not Path(target_index_path).exists() or not Path(target_metadata_path).exists():
-            logger.info(f"Vector store files not found at {target_index_path}")
+        if not Path(target_metadata_path).exists():
+            logger.info(f"Vector store metadata not found at {target_metadata_path}")
             return False
             
         try:
-            # Load FAISS index
-            self.index = faiss.read_index(target_index_path)
-            
+            # Load FAISS index if available and allowed
+            if FAISS_AVAILABLE and faiss is not None and Path(target_index_path).exists():
+                try:
+                    self.index = faiss.read_index(target_index_path)
+                except Exception as faiss_err:
+                    logger.warning(f"Could not load FAISS index file ({faiss_err}). Falling back to NumPy.")
+                    self.index = None
+            else:
+                self.index = None
+
+            # Load NumPy vectors if available
+            if Path(self.npy_path).exists():
+                self.vectors = np.load(self.npy_path)
+
             # Load metadata
             with open(target_metadata_path, "rb") as f:
                 metadata = pickle.load(f)
@@ -315,7 +352,7 @@ class VectorStore:
             
             logger.info(
                 f"Loaded vector store with {len(self.job_ids)} jobs. "
-                f"Index type: {self.index_type}, dim: {self.embedding_dim}"
+                f"Engine: {'FAISS' if self.index is not None else 'NumPy'}, dim: {self.embedding_dim}"
             )
             return True
         except Exception as e:

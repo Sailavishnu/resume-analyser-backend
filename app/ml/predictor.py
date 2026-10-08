@@ -18,6 +18,21 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+from app.ml.custom_model import CustomRandomForestRegressor, SimpleDecisionTreeRegressor
+
+
+class SafeModelUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if name in ("CustomRandomForestRegressor", "SimpleDecisionTreeRegressor"):
+            from app.ml.custom_model import CustomRandomForestRegressor, SimpleDecisionTreeRegressor
+            mapping = {
+                "CustomRandomForestRegressor": CustomRandomForestRegressor,
+                "SimpleDecisionTreeRegressor": SimpleDecisionTreeRegressor
+            }
+            return mapping[name]
+        return super().find_class(module, name)
+
+
 class ResumeJobMatchPredictor:
     """
     Production-grade Custom ML + Semantic Match Predictor.
@@ -64,7 +79,7 @@ class ResumeJobMatchPredictor:
             
             if os.path.exists(model_path):
                 with open(model_path, 'rb') as f:
-                    self.custom_model = pickle.load(f)
+                    self.custom_model = SafeModelUnpickler(f).load()
                 
                 if os.path.exists(metadata_path):
                     import json
