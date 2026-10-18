@@ -5,7 +5,7 @@ from bson import ObjectId
 from pymongo.database import Database
 from typing import Dict, Any, List
 
-from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError, StorageError
+from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError, StorageError, ProcessingError
 from app.cloud.cloudinary_service import CloudinaryService
 from app.ml.document_service import DocumentService
 from app.utils.dates import utc_now
@@ -37,6 +37,8 @@ class ResumeService:
         validation = validate_resume_file(filename, content_type, len(file_content), max_size_bytes)
         if not validation['valid']:
             raise ValidationError(f"Invalid file: {', '.join(validation['errors'])}")
+        if slot not in ("primary", "secondary"):
+            raise ValidationError("Slot must be 'primary' or 'secondary'")
         
         # Generate unique filename
         unique_filename = generate_unique_filename(validation['sanitized_name'], f"student_{student_id}")
@@ -45,36 +47,44 @@ class ResumeService:
             # Upload to Cloudinary as raw resource under resumes/{student_id}/
             upload_result = self.cloudinary.upload_resume(file_content, unique_filename, content_type, student_id)
             
-            # Check if replacing an existing resume in the exact same slot
-            existing_in_slot = self.db[C.RESUMES].find_one({"student_id": ObjectId(student_id), "slot": slot})
-            
             # If uploaded as primary, demote existing primary to secondary
             if slot == "primary":
-                existing_secondary = self.db[C.RESUMES].find_one({"student_id": ObjectId(student_id), "slot": "secondary"})
-                if existing_secondary and existing_secondary.get("cloudinary_public_id"):
-                    # Vault max size 2: remove old secondary when demoting primary
-                    self.cloudinary.delete_file(existing_secondary["cloudinary_public_id"])
+                existing_secondaries = list(self.db[C.RESUMES].find(
+                    {"student_id": ObjectId(student_id), "slot": "secondary"}
+                ))
+                for existing_secondary in existing_secondaries:
+                    if existing_secondary.get("cloudinary_public_id"):
+                        self.cloudinary.delete_file(existing_secondary["cloudinary_public_id"])
                     self.db[C.RESUMES].delete_one({"_id": existing_secondary["_id"]})
                     
                 self.db[C.RESUMES].update_many(
                     {"student_id": ObjectId(student_id), "slot": "primary"},
                     {"$set": {"slot": "secondary", "is_primary": False, "is_current": False}}
                 )
-            elif slot == "secondary" and existing_in_slot:
-                # Direct replacement of secondary slot
-                if existing_in_slot.get("cloudinary_public_id"):
-                    self.cloudinary.delete_file(existing_in_slot["cloudinary_public_id"])
-                self.db[C.RESUMES].delete_one({"_id": existing_in_slot["_id"]})
+            elif slot == "secondary":
+                # Remove every legacy duplicate so the vault remains capped at one per slot.
+                for old_resume in self.db[C.RESUMES].find(
+                    {"student_id": ObjectId(student_id), "slot": "secondary"}
+                ):
+                    if old_resume.get("cloudinary_public_id"):
+                        self.cloudinary.delete_file(old_resume["cloudinary_public_id"])
+                    self.db[C.RESUMES].delete_one({"_id": old_resume["_id"]})
             
             # Create resume document with Cloudinary metadata
             resume_doc = {
                 "student_id": ObjectId(student_id),
                 "name": validation['sanitized_name'].split('.')[0],
+                "original_file_name": validation['sanitized_name'],
                 "file_name": unique_filename,
                 "file_type": content_type,
                 "file_size": upload_result['bytes'],
                 "cloudinary_url": upload_result['cloudinary_url'],
                 "cloudinary_public_id": upload_result['cloudinary_public_id'],
+                "cloudinary_asset_id": upload_result.get("asset_id"),
+                "cloudinary_resource_type": upload_result.get("resource_type", "raw"),
+                "cloudinary_version": upload_result.get("version"),
+                "cloudinary_format": upload_result.get("format"),
+                "storage_provider": upload_result.get("storage_provider", "cloudinary"),
                 "version": 1,
                 "slot": slot,
                 "is_primary": (slot == "primary"),
@@ -102,8 +112,8 @@ class ResumeService:
                 # Attach latest analysis
                 analysis = self.db[C.RESUME_ANALYSES].find_one({"resume_id": result.inserted_id})
                 if analysis:
-                    updated_doc["score"] = analysis.get("overall_score", 80)
-                    updated_doc["ats_score"] = analysis.get("ats_score", 85)
+                    updated_doc["score"] = analysis.get("overall_score")
+                    updated_doc["ats_score"] = analysis.get("ats_score")
                     updated_doc["analysis"] = analysis
                 return updated_doc
             
@@ -124,6 +134,11 @@ class ResumeService:
         resumes = []
         for doc in cursor:
             doc["id"] = str(doc["_id"])
+            # Older records may not have timestamps; use the Mongo ID creation time
+            # instead of displaying an invalid date in the student vault.
+            doc.setdefault("created_at", doc["_id"].generation_time)
+            doc.setdefault("updated_at", doc.get("created_at"))
+            doc.setdefault("original_file_name", doc.get("name") or doc.get("file_name"))
             doc["student_id"] = str(doc.get("student_id", student_id))
             doc["slot"] = doc.get("slot") or ("primary" if doc.get("is_primary") else "secondary")
             doc["is_primary"] = (doc["slot"] == "primary")
@@ -134,12 +149,12 @@ class ResumeService:
                 sort=[("created_at", -1)]
             )
             if analysis:
-                doc["score"] = analysis.get("overall_score", 80)
-                doc["ats_score"] = analysis.get("ats_score", 85)
+                doc["score"] = analysis.get("overall_score")
+                doc["ats_score"] = analysis.get("ats_score")
                 doc["analysis"] = analysis
             else:
-                doc["score"] = doc.get("score", 80)
-                doc["ats_score"] = doc.get("ats_score", 85)
+                doc["score"] = doc.get("score")
+                doc["ats_score"] = doc.get("ats_score")
             
             resumes.append(doc)
         
@@ -150,20 +165,35 @@ class ResumeService:
         if slot not in ("primary", "secondary"):
             raise ValidationError("Slot must be 'primary' or 'secondary'")
         
-        # If setting as primary, demote other primary
-        if slot == "primary":
-            self.db[C.RESUMES].update_many(
-                {"student_id": ObjectId(student_id), "slot": "primary"},
-                {"$set": {"slot": "secondary", "is_primary": False, "is_current": False}}
+        owner_id = ObjectId(student_id)
+        target_id = ObjectId(resume_id)
+        target = self.db[C.RESUMES].find_one({"_id": target_id, "student_id": owner_id})
+        if not target:
+            raise NotFoundError("Resume")
+
+        prior_slot = target.get("slot") or ("primary" if target.get("is_primary") else "secondary")
+        occupant = self.db[C.RESUMES].find_one({
+            "student_id": owner_id,
+            "slot": slot,
+            "_id": {"$ne": target_id},
+        })
+        if occupant and prior_slot in ("primary", "secondary"):
+            self.db[C.RESUMES].update_one(
+                {"_id": occupant["_id"]},
+                {"$set": {
+                    "slot": prior_slot,
+                    "is_primary": prior_slot == "primary",
+                    "is_current": prior_slot == "primary",
+                    "updated_at": utc_now(),
+                }}
             )
-        
         self.db[C.RESUMES].update_one(
-            {"_id": ObjectId(resume_id), "student_id": ObjectId(student_id)},
+            {"_id": target_id, "student_id": owner_id},
             {"$set": {
                 "slot": slot,
-                "is_primary": (slot == "primary"),
-                "is_current": (slot == "primary"),
-                "updated_at": utc_now()
+                "is_primary": slot == "primary",
+                "is_current": slot == "primary",
+                "updated_at": utc_now(),
             }}
         )
         return await self.get_resume_by_id(resume_id, student_id)
@@ -184,8 +214,8 @@ class ResumeService:
         
         analysis = self.db[C.RESUME_ANALYSES].find_one({"resume_id": resume["_id"]})
         if analysis:
-            resume["score"] = analysis.get("overall_score", 80)
-            resume["ats_score"] = analysis.get("ats_score", 85)
+            resume["score"] = analysis.get("overall_score")
+            resume["ats_score"] = analysis.get("ats_score")
             resume["analysis"] = analysis
             
         return resume
@@ -226,15 +256,70 @@ class ResumeService:
         await self.get_resume_by_id(resume_id, student_id)
         
         cursor = self.db[C.RESUME_IMPROVEMENTS].find(
-            {"resume_id": ObjectId(resume_id)}
+            {"resume_id": ObjectId(resume_id), "generated_by": "gemini"}
         ).sort("created_at", -1)
         
         improvements = []
         for doc in cursor:
             doc["id"] = str(doc["_id"])
+            doc["resume_id"] = str(doc["resume_id"])
+            doc["student_id"] = str(doc["student_id"])
             improvements.append(doc)
         
         return improvements
+
+    async def generate_resume_improvements(self, resume_id: str, student_id: str, target_role: str) -> List[Dict[str, Any]]:
+        """Generate role-specific rewrites grounded only in this user's parsed resume."""
+        resume = await self.get_resume_by_id(resume_id, student_id)
+        parsed = resume.get("parsed_data") or {}
+        source_bullets = []
+
+        for item in parsed.get("experience") or []:
+            label = " / ".join(part for part in [item.get("position"), item.get("company")] if part) or "Experience"
+            for bullet in item.get("key_points") or []:
+                if isinstance(bullet, str) and bullet.strip():
+                    source_bullets.append({"section": label, "original_text": bullet.strip()})
+        for item in parsed.get("projects") or []:
+            label = item.get("project_name") or item.get("projectName") or "Project"
+            for bullet in item.get("key_points") or []:
+                if isinstance(bullet, str) and bullet.strip():
+                    source_bullets.append({"section": label, "original_text": bullet.strip()})
+
+        if not source_bullets:
+            raise ValidationError("No experience or project bullet points were parsed from this resume to rewrite.")
+
+        from app.ml.gemini_service import gemini_interview_service
+        if not gemini_interview_service.api_key:
+            raise ProcessingError("Resume enhancement requires GEMINI_API_KEY in backend/.env.")
+
+        import asyncio
+        suggestions = await asyncio.to_thread(
+            gemini_interview_service.generate_resume_enhancements,
+            target_role.strip(),
+            source_bullets,
+        )
+        if not suggestions:
+            raise ProcessingError("Gemini could not generate valid resume edits. Check the API key and try again.")
+
+        docs = [{
+            "resume_id": ObjectId(resume_id),
+            "student_id": ObjectId(student_id),
+            "section": suggestion["section"],
+            "original_text": suggestion["original_text"],
+            "suggested_text": suggestion["suggested_text"],
+            "reason": suggestion["reason"],
+            "improvement_type": "role_targeted",
+            "target_role": target_role.strip(),
+            "generated_by": "gemini",
+            "status": "pending",
+            "created_at": utc_now(),
+        } for suggestion in suggestions]
+        result = self.db[C.RESUME_IMPROVEMENTS].insert_many(docs)
+        for doc, object_id in zip(docs, result.inserted_ids):
+            doc["id"] = str(object_id)
+            doc["resume_id"] = resume_id
+            doc["student_id"] = student_id
+        return docs
     
     async def update_improvement_status(
         self, 
@@ -257,12 +342,10 @@ class ResumeService:
             {"$set": {"status": status, "updated_at": utc_now()}}
         )
         
-        # If accepted, create new resume version
-        if status == "accepted":
-            await self._create_improved_version(improvement)
-        
         improvement["status"] = status
         improvement["id"] = str(improvement["_id"])
+        improvement["resume_id"] = str(improvement["resume_id"])
+        improvement["student_id"] = str(improvement["student_id"])
         return improvement
     
     # ─── Private methods ───────────────────────────────────────────────────
@@ -297,6 +380,29 @@ class ResumeService:
             
             # Parse structure
             parsed_data = self.document_service.parse_resume_structure(raw_text)
+
+            # Store structured NLP results alongside the extracted resume fields.
+            # SentenceTransformer embeddings are JSON-safe and reusable for matching.
+            from app.ml.nlp_processor import nlp_processor
+            from app.ml.embeddings import embedding_service
+
+            nlp_processor.load()
+            entities = nlp_processor.extract_entities(raw_text) or {}
+            extracted_skills = sorted(nlp_processor.extract_skills(raw_text))
+            embedding_service.load_model()
+            embedding = embedding_service.encode_text(raw_text[:12000]).tolist()
+            parsed_data["nlp"] = {
+                "entities": entities,
+                "normalized_skills": extracted_skills,
+                "skill_extraction": "spaCy skill dictionary with normalization" if nlp_processor.is_loaded else "regex skill fallback; spaCy model unavailable",
+                "spacy_model": "en_core_web_sm" if nlp_processor.is_loaded else None,
+                "semantic_embedding": {
+                    "model": embedding_service.model_name,
+                    "engine": embedding_service.engine_name,
+                    "dimension": len(embedding),
+                    "vector": embedding,
+                },
+            }
             
             # Update progress
             self.db[C.RESUMES].update_one(
@@ -323,6 +429,7 @@ class ResumeService:
                 "overall_score": resume_health,
                 "ats_score": ats_score,
                 "section_scores": section_scores,
+                "ats_checks": ats_checks,
                 "strengths": self._generate_strengths(parsed_data, section_scores),
                 "warnings": self._generate_warnings(parsed_data, section_scores),
                 "critical_issues": [],
@@ -334,9 +441,6 @@ class ResumeService:
             }
             
             self.db[C.RESUME_ANALYSES].insert_one(analysis_doc)
-            
-            # Generate improvements
-            await self._generate_improvements(resume_id, parsed_data, section_scores)
             
             # Update final status
             self.db[C.RESUMES].update_one(
@@ -425,42 +529,3 @@ class ResumeService:
             })
         
         return recommendations
-    
-    async def _generate_improvements(self, resume_id: str, parsed_data: dict, section_scores: dict) -> None:
-        """Generate specific improvement suggestions."""
-        resume = self.db[C.RESUMES].find_one({"_id": ObjectId(resume_id)})
-        student_id = resume["student_id"]
-        
-        improvements = []
-        
-        # Summary improvement
-        if not parsed_data.get("summary") or len(parsed_data.get("summary", "")) < 50:
-            improvements.append({
-                "resume_id": ObjectId(resume_id),
-                "student_id": student_id,
-                "section": "summary",
-                "original_text": parsed_data.get("summary", ""),
-                "suggested_text": "Motivated Computer Science student with expertise in full-stack development and strong problem-solving skills. Experienced in modern web technologies and passionate about creating efficient, scalable solutions.",
-                "reason": "A strong summary helps recruiters quickly understand your value proposition",
-                "improvement_type": "professional",
-                "status": "pending",
-                "created_at": utc_now(),
-            })
-        
-        # Insert improvements
-        if improvements:
-            self.db[C.RESUME_IMPROVEMENTS].insert_many(improvements)
-    
-    async def _create_improved_version(self, improvement: dict) -> None:
-        """Create new resume version with accepted improvement."""
-        # This would create a new version with the improvement applied
-        # For now, just increment version number
-        self.db[C.RESUME_VERSIONS].insert_one({
-            "resume_id": improvement["resume_id"],
-            "version_number": 2,  # Would calculate next version
-            "target_role": None,
-            "ats_score": None,
-            "resume_health_score": None,
-            "content": {"improvement_applied": str(improvement["_id"])},
-            "created_at": utc_now(),
-        })

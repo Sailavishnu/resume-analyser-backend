@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
@@ -6,6 +6,11 @@ from datetime import datetime
 class JDMatchRequest(BaseModel):
     resume_id: str
     job_id: str
+
+
+class ResumeTextMatchRequest(BaseModel):
+    resume_id: str
+    job_description: str = Field(min_length=30, max_length=30000)
 
 
 class MatchFeatures(BaseModel):

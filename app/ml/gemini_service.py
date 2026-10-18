@@ -122,6 +122,48 @@ Do not include any markdown or code blocks around the JSON. Output only raw JSON
 
         return None
 
+    def generate_resume_enhancements(self, target_role: str, source_bullets: List[Dict[str, str]]) -> Optional[List[Dict[str, str]]]:
+        """Rewrite only supplied resume bullets for the user's chosen target role."""
+        prompt = f"""
+You are a careful resume editor. Tailor the supplied candidate statements to this target role: {target_role!r}.
+Return JSON only, as an array of objects with keys: section, original_text, suggested_text, reason.
+Return at most six suggestions. Every original_text must exactly match one supplied source bullet.
+Preserve the candidate's actual experience, technologies, scope, and numbers. Never add tools, skills,
+metrics, responsibilities, employers, certifications, or outcomes that do not appear in the source.
+Improve clarity, action verbs, specificity, and alignment to the target role using only supported facts.
+If a source bullet cannot be improved honestly, omit it. Do not add generic summary text.
+
+Source bullets:
+{json.dumps(source_bullets[:20], ensure_ascii=False)}
+"""
+        response_text = self._call_gemini(prompt, temperature=0.2)
+        if not response_text:
+            return None
+        try:
+            cleaned = response_text.replace("```json", "").replace("```", "").strip()
+            suggestions = json.loads(cleaned)
+            if not isinstance(suggestions, list):
+                return None
+            allowed = {item["original_text"].strip() for item in source_bullets}
+            validated = []
+            for item in suggestions[:6]:
+                if not isinstance(item, dict):
+                    continue
+                original = str(item.get("original_text", "")).strip()
+                suggested = str(item.get("suggested_text", "")).strip()
+                if original not in allowed or not suggested:
+                    continue
+                validated.append({
+                    "section": str(item.get("section", "Experience"))[:120],
+                    "original_text": original,
+                    "suggested_text": suggested[:2000],
+                    "reason": str(item.get("reason", "Improves clarity for the selected target role."))[:500],
+                })
+            return validated
+        except (ValueError, TypeError, KeyError) as e:
+            logger.warning("[GeminiService] Failed to parse resume enhancements: %s", e)
+            return None
+
     def generate_general_domain_questions(
         self,
         domain: str = "Fullstack Web Development",

@@ -5,7 +5,7 @@ from bson import ObjectId
 from pymongo.database import Database
 from typing import Dict, Any
 
-from app.core.exceptions import NotFoundError, ProcessingError
+from app.core.exceptions import NotFoundError, ProcessingError, ValidationError
 from app.ml.predictor import predictor
 from app.utils.dates import utc_now
 from app.ml.scoring import analyze_skill_gap
@@ -15,6 +15,51 @@ from app.cloud import collections as C
 class JDMatchService:
     def __init__(self, db: Database):
         self.db = db
+
+    async def compare_resume_to_job_description(self, resume_id: str, student_id: str, job_description: str) -> Dict[str, Any]:
+        """Compare a saved resume with the skills and language in a supplied JD."""
+        resume = self.db[C.RESUMES].find_one({
+            "_id": ObjectId(resume_id),
+            "student_id": ObjectId(student_id),
+        })
+        if not resume:
+            raise NotFoundError("Resume not found or access denied")
+
+        parsed = resume.get("parsed_data") or {}
+        resume_skills = []
+        for values in (parsed.get("skills") or {}).values():
+            if isinstance(values, list):
+                resume_skills.extend(value for value in values if isinstance(value, str))
+        resume_skills.extend((parsed.get("nlp") or {}).get("normalized_skills") or [])
+        resume_skills = list(dict.fromkeys(resume_skills))
+
+        from app.ml.nlp_processor import nlp_processor
+        job_skills = sorted(nlp_processor.extract_skills(job_description))
+        if not job_skills:
+            raise ValidationError("No supported technical skills were found in the job description. Include named technologies or tools.")
+
+        skill_gap = analyze_skill_gap(resume_skills, job_skills)
+        resume_text = parsed.get("raw_text") or " ".join(resume_skills)
+
+        def semantic_score():
+            from app.ml.embeddings import embedding_service
+            resume_vector = embedding_service.encode_text(resume_text[:12000])
+            job_vector = embedding_service.encode_text(job_description[:12000])
+            similarity = embedding_service.calculate_similarity(resume_vector, job_vector)
+            return round(similarity, 4), embedding_service.engine_name
+
+        import asyncio
+        similarity, engine = await asyncio.to_thread(semantic_score)
+        return {
+            "resume_id": resume_id,
+            "skills_found_in_job_description": job_skills,
+            "matched_skills": skill_gap["matched_skills"],
+            "partial_skills": skill_gap["partial_skills"],
+            "missing_skills": skill_gap["missing_skills"],
+            "skill_coverage": round(skill_gap["skill_coverage"], 1),
+            "semantic_similarity": similarity,
+            "embedding_engine": engine,
+        }
     
     async def calculate_match_score(self, resume_id: str, job_id: str, student_id: str) -> Dict[str, Any]:
         """

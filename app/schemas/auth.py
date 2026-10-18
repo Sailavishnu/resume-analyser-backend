@@ -35,6 +35,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class AdminLoginRequest(BaseModel):
+    admin_id: str
+    password: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str

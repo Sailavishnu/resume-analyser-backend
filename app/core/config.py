@@ -51,7 +51,7 @@ class Settings(BaseModel):
         return self.BACKEND_CORS_ORIGINS
     
     # JWT Security
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "resume-ai-placement-platform-secret-2026")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", str(60 * 24 * 7)))
     
@@ -63,7 +63,7 @@ class Settings(BaseModel):
     # Admin Credentials
     ADMIN_ID: str = os.getenv("ADMIN_ID", "admin")
     ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@resumeai.com")
-    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin")
+    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "")
     
     # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./resume_ai.db")

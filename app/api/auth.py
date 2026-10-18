@@ -2,13 +2,16 @@
 Authentication API routes.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
+from app.core.config import settings
+from app.core.security import hash_password
 from pymongo.database import Database
 
 from app.core.dependencies import get_current_user
 from app.cloud.mongodb import get_database
-from app.schemas.auth import SignUpRequest, LoginRequest, TokenResponse, RefreshRequest, MeResponse
+from app.schemas.auth import SignUpRequest, LoginRequest, AdminLoginRequest, TokenResponse, RefreshRequest, MeResponse
 from app.schemas.common import DataResponse, MessageResponse
 from app.services.auth_service import AuthService
+from app.utils.dates import utc_now
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -49,6 +52,45 @@ async def login(
     # Create tokens
     tokens = auth_service.create_tokens(user)
     
+    return DataResponse(data=TokenResponse(**tokens))
+
+
+@router.post("/admin-login", response_model=DataResponse[TokenResponse])
+async def admin_login(request: AdminLoginRequest, db: Database = Depends(get_database)):
+    """Authenticate the configured admin and issue a normal, database-backed JWT."""
+    if not settings.ADMIN_ID or not settings.ADMIN_PASSWORD or not settings.SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Admin authentication is not configured")
+    if request.admin_id != settings.ADMIN_ID or request.password != settings.ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin ID or password")
+
+    admin_email = settings.ADMIN_EMAIL.lower()
+    user = db["users"].find_one({"email": admin_email})
+    if user is None:
+        user_doc = {
+            "email": admin_email,
+            "password_hash": hash_password(settings.ADMIN_PASSWORD),
+            "full_name": "Platform Administrator",
+            "role": "admin",
+            "is_active": True,
+            "is_verified": True,
+            "created_at": utc_now(),
+            "last_login_at": utc_now(),
+        }
+        user_doc["_id"] = db["users"].insert_one(user_doc).inserted_id
+        user = user_doc
+    else:
+        if user.get("role") != "admin" or not user.get("is_active", True):
+            raise HTTPException(status_code=403, detail="Configured admin account is disabled or has an invalid role")
+        if not user.get("full_name"):
+            user["full_name"] = user.get("name") or "Platform Administrator"
+            db["users"].update_one(
+                {"_id": user["_id"]},
+                {"$set": {"full_name": user["full_name"]}},
+            )
+
+    user["id"] = str(user["_id"])
+    db["users"].update_one({"_id": user["_id"]}, {"$set": {"last_login_at": utc_now()}})
+    tokens = AuthService(db).create_tokens(user)
     return DataResponse(data=TokenResponse(**tokens))
 
 

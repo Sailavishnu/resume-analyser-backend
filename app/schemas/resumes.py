@@ -1,5 +1,5 @@
-from pydantic import BaseModel, model_validator
-from typing import Optional, Any
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, Any, Literal
 from datetime import datetime
 from app.utils.serializers import serialize_mongo_doc
 
@@ -15,17 +15,23 @@ class ResumeOut(BaseModel):
     id: str
     student_id: str
     name: str
+    original_file_name: Optional[str] = None
     file_name: str
     file_type: str
     file_size: int
     cloudinary_url: Optional[str] = None
     cloudinary_public_id: Optional[str] = None
+    cloudinary_asset_id: Optional[str] = None
+    cloudinary_resource_type: Optional[str] = None
+    cloudinary_version: Optional[int] = None
+    cloudinary_format: Optional[str] = None
+    storage_provider: Optional[str] = None
     version: int = 1
     slot: Optional[str] = "primary"   # primary | secondary
     is_primary: bool = True
     is_current: bool = True
-    score: Optional[int] = 80
-    ats_score: Optional[int] = 85
+    score: Optional[int] = None
+    ats_score: Optional[int] = None
     status: str = "uploaded"          # uploaded | processing | analyzed | failed
     analysis_status: Optional[str] = None
     analysis_progress: Optional[int] = None
@@ -158,11 +164,16 @@ class ImprovementOut(BaseModel):
     reason: str
     improvement_type: str   # impact | concise | ats | technical | professional | quantified
     status: str = "pending" # pending | accepted | rejected
+    target_role: Optional[str] = None
     created_at: Optional[datetime] = None
 
 
+class ResumeEnhancementRequest(BaseModel):
+    target_role: str = Field(min_length=2, max_length=120)
+
+
 class ImprovementUpdateRequest(BaseModel):
-    status: str  # accepted | rejected
+    status: Literal["accepted", "rejected"]
 
 
 class ResumeVersionOut(BaseModel):

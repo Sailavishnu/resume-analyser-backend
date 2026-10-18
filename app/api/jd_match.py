@@ -10,11 +10,26 @@ from typing import List, Optional
 from app.core.dependencies import get_current_user, require_student
 from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse
-from app.schemas.matching import JDMatchRequest, JDMatchOut
+from app.schemas.matching import JDMatchRequest, JDMatchOut, ResumeTextMatchRequest
 from app.services.jd_match_service import JDMatchService
 from app.services.semantic_match_service import get_semantic_match_service
 
 router = APIRouter(prefix="/jd-match", tags=["Job Matching"])
+
+
+@router.post("/resume")
+async def compare_resume_to_job_description(
+    request: ResumeTextMatchRequest,
+    current_user: dict = Depends(require_student),
+    db: Database = Depends(get_database)
+):
+    """Compare a student's owned resume with a pasted job description."""
+    result = await JDMatchService(db).compare_resume_to_job_description(
+        request.resume_id,
+        current_user["id"],
+        request.job_description,
+    )
+    return DataResponse(data=result)
 
 
 @router.post("", response_model=DataResponse[JDMatchOut])

@@ -31,6 +31,7 @@ async def get_admin_dashboard(
 async def get_admin_pdf_report(
     start_date: str = Query("2026-09-01"),
     end_date: str = Query("2026-09-30"),
+    current_user: dict = Depends(require_admin),
     db: Database = Depends(get_database)
 ):
     """Generate and return native PyMuPDF executive report as direct PDF file download."""

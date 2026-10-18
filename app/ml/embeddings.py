@@ -14,7 +14,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-ENABLE_TORCH_EMBEDDINGS = os.environ.get("ENABLE_TORCH_EMBEDDINGS", "false").lower() in ("true", "1")
+ENABLE_TORCH_EMBEDDINGS = os.environ.get("ENABLE_TORCH_EMBEDDINGS", "true").lower() in ("true", "1")
 SENTENCE_TRANSFORMERS_AVAILABLE = False
 SentenceTransformer = None
 
@@ -76,6 +76,18 @@ class EmbeddingService:
     def embedding_dimension(self) -> int:
         """Get embedding dimension."""
         return self._embedding_dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def engine_name(self) -> str:
+        if self._model is not None:
+            return "sentence-transformers"
+        if self._use_fallback:
+            return "deterministic-hash-fallback"
+        return "not-loaded"
 
     def _fallback_encode(self, texts: List[str], normalize: bool = True) -> np.ndarray:
         """Pure Python / NumPy 384-dimensional dense semantic hashing encoder."""

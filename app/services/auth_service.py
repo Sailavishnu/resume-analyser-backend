@@ -79,6 +79,7 @@ class AuthService:
         """Create access and refresh tokens for authenticated user."""
         user_id = str(user["_id"])
         role = user["role"]
+        full_name = user.get("full_name") or user.get("name") or user.get("email", "User").split("@")[0]
         
         access_token = create_access_token(user_id, role)
         refresh_token = create_refresh_token(user_id, role)
@@ -89,7 +90,7 @@ class AuthService:
             "token_type": "bearer",
             "user_id": user_id,
             "role": role,
-            "full_name": user["full_name"]
+            "full_name": full_name
         }
     
     def get_user_by_id(self, user_id: str) -> dict | None:

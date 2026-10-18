@@ -357,77 +357,6 @@ class DataSeeder:
         
         print(f"  ✅ Created {count} job postings")
     
-    def create_sample_resumes(self):
-        """Create sample resumes for student users."""
-        print("\n📄 Creating sample resumes...")
-        
-        # Get student users
-        student_users = list(self.db[USERS_COLLECTION].find({"role": "student"}))
-        
-        resume_count = 0
-        for user in student_users[:3]:  # Create resumes for first 3 students
-            profile = self.db[USER_PROFILES_COLLECTION].find_one({"user_id": user["_id"]})
-            
-            resume = {
-                "user_id": user["_id"],
-                "filename": f"{profile['full_name'].replace(' ', '_')}_Resume.pdf",
-                "file_size": random.randint(50000, 200000),
-                "file_url": f"https://example.com/resumes/{user['_id']}.pdf",
-                "upload_date": utc_now() - timedelta(days=random.randint(1, 30)),
-                "status": "processed",
-                "extracted_text": f"Sample resume text for {profile['full_name']}...",
-                "structured_data": {
-                    "contact_info": {
-                        "name": profile["full_name"],
-                        "email": user["email"],
-                        "phone": profile["phone"]
-                    },
-                    "skills": profile["skills"],
-                    "education": profile["education"],
-                    "experience": profile["experience"]
-                }
-            }
-            
-            result = self.db[RESUMES_COLLECTION].insert_one(resume)
-            self.created_resumes.append(result.inserted_id)
-            
-            # Create resume analysis
-            analysis = {
-                "resume_id": result.inserted_id,
-                "user_id": user["_id"],
-                "health_score": random.randint(65, 95),
-                "ats_score": random.randint(60, 90),
-                "analysis_date": utc_now(),
-                "strengths": [
-                    "Strong technical skills",
-                    "Clear formatting",
-                    "Relevant experience"
-                ],
-                "weaknesses": [
-                    "Could add more quantified achievements",
-                    "Missing industry keywords"
-                ],
-                "suggestions": [
-                    "Add more specific project details",
-                    "Include relevant certifications"
-                ],
-                "keyword_analysis": {
-                    "found_keywords": profile["skills"][:3],
-                    "missing_keywords": ["Agile", "REST APIs", "Testing"],
-                    "keyword_density": 0.15
-                },
-                "sections_analysis": {
-                    "contact_info": {"score": 90, "feedback": "Complete contact information"},
-                    "skills": {"score": 85, "feedback": "Good technical skills listed"},
-                    "experience": {"score": 75, "feedback": "Could add more details"}
-                }
-            }
-            
-            self.db[RESUME_ANALYSES_COLLECTION].insert_one(analysis)
-            resume_count += 1
-        
-        print(f"  ✅ Created {resume_count} resumes with analyses")
-    
     def create_sample_applications(self):
         """Create sample job applications."""
         print("\n📝 Creating sample applications...")
@@ -576,11 +505,11 @@ def main():
         # Create sample data
         seeder.create_admin_user()
         seeder.create_sample_users()
-        seeder.create_sample_jobs()
-        seeder.create_sample_resumes()
-        seeder.create_sample_applications()
-        seeder.create_sample_notifications()
-        seeder.create_analytics_events()
+        # No sample job postings are inserted into student accounts.
+        # New student accounts should have an empty resume vault.
+        # Applications should only exist after a student applies to a real posting.
+        # Notifications are generated only by real account events.
+        # Analytics are derived from real activity.
         
         print("\n🎉 Database seeding completed successfully!")
         print("\nSample data created:")

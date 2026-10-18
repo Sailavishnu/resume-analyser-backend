@@ -9,7 +9,7 @@ from pymongo.database import Database
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 
-from app.core.dependencies import get_optional_current_user
+from app.core.dependencies import require_student
 from app.cloud.mongodb import get_database
 from app.cloud import collections as C
 from app.schemas.common import DataResponse
@@ -32,30 +32,16 @@ class SubmitAnswerRequest(BaseModel):
     student_id: Optional[str] = None
 
 
-async def _resolve_student_id(user: Optional[dict], custom_id: Optional[str], db: Database) -> str:
-    """Resolve student ID from user token, custom param, or default demo student."""
-    if user and user.get("id"):
-        return user["id"]
-    if custom_id:
-        return custom_id
-    # Fallback to first student in MongoDB or demo ObjectId
-    first_student = db[C.USERS].find_one({"role": "student"})
-    if first_student:
-        return str(first_student["_id"])
-    return "65ce00000000000000000001"
-
-
 @router.get("/check-primary-resume", response_model=DataResponse[Dict[str, Any]])
 async def check_primary_resume(
-    student_id: Optional[str] = None,
-    current_user: Optional[dict] = Depends(get_optional_current_user),
+    current_user: dict = Depends(require_student),
     db: Database = Depends(get_database)
 ):
     """
     Check if the student has uploaded their primary resume.
     Returns status and filename or notification message.
     """
-    s_id = await _resolve_student_id(current_user, student_id, db)
+    s_id = current_user["id"]
     from bson import ObjectId
     try:
         student_obj_id = ObjectId(s_id)
@@ -93,13 +79,13 @@ async def check_primary_resume(
 @router.post("/start", response_model=DataResponse[Dict[str, Any]])
 async def start_interview_session(
     request: StartInterviewRequest,
-    current_user: Optional[dict] = Depends(get_optional_current_user),
+    current_user: dict = Depends(require_student),
     db: Database = Depends(get_database)
 ):
     """
     Start a new AI Mock Interview tailored to the student's primary resume or chosen domain.
     """
-    student_id = await _resolve_student_id(current_user, request.student_id, db)
+    student_id = current_user["id"]
     service = AIInterviewService(db)
     result = await service.start_interview(
         student_id=student_id,
@@ -118,14 +104,14 @@ async def start_interview_session(
 async def submit_interview_answer(
     session_id: str,
     request: SubmitAnswerRequest,
-    current_user: Optional[dict] = Depends(get_optional_current_user),
+    current_user: dict = Depends(require_student),
     db: Database = Depends(get_database)
 ):
     """
     Submit an answer to the current interview question.
     Runs local NLP analysis and generates the next adaptive question.
     """
-    student_id = await _resolve_student_id(current_user, request.student_id, db)
+    student_id = current_user["id"]
     service = AIInterviewService(db)
     result = await service.submit_answer(
         session_id=session_id,
@@ -141,11 +127,11 @@ async def submit_interview_answer(
 @router.get("/{session_id}", response_model=DataResponse[Dict[str, Any]])
 async def get_interview_session(
     session_id: str,
-    current_user: Optional[dict] = Depends(get_optional_current_user),
+    current_user: dict = Depends(require_student),
     db: Database = Depends(get_database)
 ):
     """Get status and report for an interview session."""
-    student_id = await _resolve_student_id(current_user, None, db)
+    student_id = current_user["id"]
     service = AIInterviewService(db)
     result = await service.get_interview(session_id, student_id)
     return DataResponse(data=serialize_mongo_doc(result))
@@ -153,11 +139,11 @@ async def get_interview_session(
 
 @router.get("", response_model=DataResponse[List[Dict[str, Any]]])
 async def get_my_interviews(
-    current_user: Optional[dict] = Depends(get_optional_current_user),
+    current_user: dict = Depends(require_student),
     db: Database = Depends(get_database)
 ):
     """Get all past mock interview sessions for current student."""
-    student_id = await _resolve_student_id(current_user, None, db)
+    student_id = current_user["id"]
     service = AIInterviewService(db)
     results = await service.get_student_interviews(student_id)
     return DataResponse(data=serialize_mongo_doc(results))

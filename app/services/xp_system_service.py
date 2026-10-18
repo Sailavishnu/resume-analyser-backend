@@ -26,10 +26,10 @@ class XPSystemService:
     def __init__(self):
         self.db = get_db()
     
-    async def get_user_stats(self, user_id: str) -> Optional[CodingStats]:
+    def get_user_stats(self, user_id: str) -> Optional[CodingStats]:
         """Get user coding statistics."""
         try:
-            stats_doc = await self.db[CODING_STATS_COLLECTION].find_one({"user_id": user_id})
+            stats_doc = self.db[CODING_STATS_COLLECTION].find_one({"user_id": user_id})
             
             if stats_doc:
                 # Convert MongoDB document to CodingStats model
@@ -37,13 +37,13 @@ class XPSystemService:
                 return CodingStats(**stats_doc)
             else:
                 # Create new stats for first-time user
-                return await self.create_user_stats(user_id)
+                return self.create_user_stats(user_id)
                 
         except Exception as e:
             logger.error(f"Error getting user stats: {e}")
             return None
     
-    async def create_user_stats(self, user_id: str) -> CodingStats:
+    def create_user_stats(self, user_id: str) -> CodingStats:
         """Create initial statistics for a new user."""
         try:
             new_stats = CodingStats(user_id=user_id)
@@ -51,7 +51,7 @@ class XPSystemService:
             stats_dict = new_stats.dict()
             stats_dict['user_id'] = user_id
             
-            await self.db[CODING_STATS_COLLECTION].insert_one(stats_dict)
+            self.db[CODING_STATS_COLLECTION].insert_one(stats_dict)
             
             logger.info(f"Created new stats for user {user_id}")
             return new_stats
@@ -60,7 +60,7 @@ class XPSystemService:
             logger.error(f"Error creating user stats: {e}")
             return CodingStats(user_id=user_id)
     
-    async def update_stats_after_submission(
+    def update_stats_after_submission(
         self, 
         user_id: str, 
         problem_difficulty: DifficultyLevel,
@@ -76,7 +76,7 @@ class XPSystemService:
             Dictionary with XP gained, achievements unlocked, rank changes
         """
         try:
-            stats = await self.get_user_stats(user_id)
+            stats = self.get_user_stats(user_id)
             if not stats:
                 return {"error": "Could not load user stats"}
             
@@ -151,7 +151,7 @@ class XPSystemService:
                     result["new_rank"] = new_rank
                 
                 # Check for achievements
-                achievements = await self._check_achievements(stats, user_id)
+                achievements = self._check_achievements(stats, user_id)
                 result["achievements_unlocked"] = achievements
                 
                 # Add achievement XP
@@ -173,7 +173,7 @@ class XPSystemService:
             stats.last_updated = datetime.now(timezone.utc)
             
             # Save to database
-            await self.db[CODING_STATS_COLLECTION].update_one(
+            self.db[CODING_STATS_COLLECTION].update_one(
                 {"user_id": user_id},
                 {"$set": stats.dict()},
                 upsert=True
@@ -192,7 +192,7 @@ class XPSystemService:
                 return rank
         return UserRank.NEWBIE
     
-    async def _check_achievements(self, stats: CodingStats, user_id: str) -> List[Dict[str, Any]]:
+    def _check_achievements(self, stats: CodingStats, user_id: str) -> List[Dict[str, Any]]:
         """Check and award new achievements."""
         new_achievements = []
         existing_achievement_ids = {a.id for a in stats.achievements}
@@ -259,7 +259,7 @@ class XPSystemService:
             unlocked_at=datetime.now(timezone.utc)
         )
     
-    async def get_leaderboard(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_leaderboard(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get global leaderboard."""
         try:
             pipeline = [
@@ -292,7 +292,7 @@ class XPSystemService:
             leaderboard = []
             
             rank = 1
-            async for doc in cursor:
+            for doc in cursor:
                 leaderboard.append({
                     "rank": rank,
                     "user_id": doc["user_id"],
@@ -312,15 +312,15 @@ class XPSystemService:
             logger.error(f"Error getting leaderboard: {e}")
             return []
     
-    async def get_user_rank_position(self, user_id: str) -> Optional[int]:
+    def get_user_rank_position(self, user_id: str) -> Optional[int]:
         """Get user's position in global ranking."""
         try:
-            user_stats = await self.get_user_stats(user_id)
+            user_stats = self.get_user_stats(user_id)
             if not user_stats:
                 return None
             
             # Count users with higher XP
-            higher_xp_count = await self.db[CODING_STATS_COLLECTION].count_documents({
+            higher_xp_count = self.db[CODING_STATS_COLLECTION].count_documents({
                 "total_xp": {"$gt": user_stats.total_xp}
             })
             

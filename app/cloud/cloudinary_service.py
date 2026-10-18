@@ -67,20 +67,28 @@ class CloudinaryService:
                     access_mode="public",
                     use_filename=True,
                     unique_filename=False,
-                    overwrite=True
+                    overwrite=False
                 )
                 
                 secure_url = upload_result.get("secure_url") or upload_result.get("url")
                 public_id = upload_result.get("public_id")
                 
+                if not secure_url or not public_id:
+                    raise RuntimeError("Cloudinary response did not include a secure URL and public ID")
+
                 return {
                     "cloudinary_url": secure_url,
                     "cloudinary_public_id": public_id,
+                    "asset_id": upload_result.get("asset_id"),
+                    "resource_type": upload_result.get("resource_type", "raw"),
+                    "version": upload_result.get("version"),
+                    "format": upload_result.get("format"),
+                    "storage_provider": "cloudinary",
                     "bytes": len(file_content),
                     "filename": filename
                 }
             except Exception as e:
-                print(f"[CloudinaryService] Upload failed, using local fallback: {e}")
+                raise RuntimeError(f"Cloudinary upload failed: {e}") from e
 
         # Local disk fallback if Cloudinary is not configured or fails
         return self._local_fallback_upload(file_content, filename, student_id)
@@ -124,6 +132,11 @@ class CloudinaryService:
         return {
             "cloudinary_url": local_url,
             "cloudinary_public_id": f"local/{filename}",
+            "asset_id": None,
+            "resource_type": "local",
+            "version": None,
+            "format": os.path.splitext(filename)[1].lstrip(".").lower() or None,
+            "storage_provider": "local",
             "bytes": len(file_content),
             "filename": filename
         }

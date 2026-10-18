@@ -17,10 +17,10 @@ from app.models.coding import (
     LanguageSupport, SubmissionStatus
 )
 from app.services.code_execution_service import code_execution_service
-from app.services.xp_system_service import xp_system_service
-from app.core.auth import get_current_user
+from app.services.xp_system_service import get_xp_system_service
+from app.core.dependencies import require_student
 
-router = APIRouter(prefix="/api/coding", tags=["coding"])
+router = APIRouter(prefix="/coding", tags=["coding"])
 logger = logging.getLogger(__name__)
 
 
@@ -77,13 +77,13 @@ class ProblemDetailResponse(BaseModel):
 
 
 @router.get("/problems", response_model=List[ProblemResponse])
-async def get_problems(
+def get_problems(
     difficulty: Optional[DifficultyLevel] = None,
     category: Optional[ProblemCategory] = None,
     search: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_student)
 ):
     """
     Get list of coding problems with filtering and pagination.
@@ -108,10 +108,10 @@ async def get_problems(
             ]
         
         # Get user's solved problems
-        user_submissions = await db[CODE_SUBMISSIONS_COLLECTION].find({
+        user_submissions = db[CODE_SUBMISSIONS_COLLECTION].distinct("problem_id", {
             "user_id": current_user["id"],
             "status": SubmissionStatus.ACCEPTED.value
-        }).distinct("problem_id")
+        })
         
         solved_problems = set(user_submissions)
         
@@ -119,7 +119,7 @@ async def get_problems(
         cursor = db[CODING_PROBLEMS_COLLECTION].find(filter_query).skip(offset).limit(limit)
         
         problems = []
-        async for problem_doc in cursor:
+        for problem_doc in cursor:
             problems.append(ProblemResponse(
                 problem_id=problem_doc["problem_id"],
                 title=problem_doc["title"],
@@ -140,9 +140,9 @@ async def get_problems(
 
 
 @router.get("/problems/{problem_id}", response_model=ProblemDetailResponse)
-async def get_problem_detail(
+def get_problem_detail(
     problem_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_student)
 ):
     """
     Get detailed information about a specific problem.
@@ -151,7 +151,7 @@ async def get_problem_detail(
         db = get_db()
         
         # Get problem
-        problem_doc = await db[CODING_PROBLEMS_COLLECTION].find_one({
+        problem_doc = db[CODING_PROBLEMS_COLLECTION].find_one({
             "problem_id": problem_id,
             "is_active": True
         })
@@ -160,7 +160,7 @@ async def get_problem_detail(
             raise HTTPException(status_code=404, detail="Problem not found")
         
         # Check if user has solved this problem
-        user_submission = await db[CODE_SUBMISSIONS_COLLECTION].find_one({
+        user_submission = db[CODE_SUBMISSIONS_COLLECTION].find_one({
             "user_id": current_user["id"],
             "problem_id": problem_id,
             "status": SubmissionStatus.ACCEPTED.value
@@ -199,10 +199,10 @@ async def get_problem_detail(
 
 
 @router.post("/problems/{problem_id}/run")
-async def run_code(
+def run_code(
     problem_id: str,
     request: RunCodeRequest,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_student)
 ):
     """
     Run code against visible test cases only (not a submission).
@@ -211,7 +211,7 @@ async def run_code(
         db = get_db()
         
         # Get problem
-        problem_doc = await db[CODING_PROBLEMS_COLLECTION].find_one({
+        problem_doc = db[CODING_PROBLEMS_COLLECTION].find_one({
             "problem_id": problem_id,
             "is_active": True
         })
@@ -254,11 +254,11 @@ async def run_code(
 
 
 @router.post("/problems/{problem_id}/submit")
-async def submit_code(
+def submit_code(
     problem_id: str,
     request: CodeSubmissionRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_student)
 ):
     """
     Submit code solution (runs against all test cases including hidden ones).
@@ -267,7 +267,7 @@ async def submit_code(
         db = get_db()
         
         # Get problem
-        problem_doc = await db[CODING_PROBLEMS_COLLECTION].find_one({
+        problem_doc = db[CODING_PROBLEMS_COLLECTION].find_one({
             "problem_id": problem_id,
             "is_active": True
         })
@@ -310,11 +310,11 @@ async def submit_code(
         submission_dict = submission.dict()
         submission_dict.pop('id', None)  # Remove id for insertion
         
-        insert_result = await db[CODE_SUBMISSIONS_COLLECTION].insert_one(submission_dict)
+        insert_result = db[CODE_SUBMISSIONS_COLLECTION].insert_one(submission_dict)
         submission_id = str(insert_result.inserted_id)
         
         # Update problem statistics
-        await db[CODING_PROBLEMS_COLLECTION].update_one(
+        db[CODING_PROBLEMS_COLLECTION].update_one(
             {"problem_id": problem_id},
             {
                 "$inc": {
@@ -325,10 +325,10 @@ async def submit_code(
         )
         
         # Recalculate acceptance rate
-        updated_problem = await db[CODING_PROBLEMS_COLLECTION].find_one({"problem_id": problem_id})
+        updated_problem = db[CODING_PROBLEMS_COLLECTION].find_one({"problem_id": problem_id})
         if updated_problem and updated_problem["total_submissions"] > 0:
             new_acceptance_rate = updated_problem["successful_submissions"] / updated_problem["total_submissions"]
-            await db[CODING_PROBLEMS_COLLECTION].update_one(
+            db[CODING_PROBLEMS_COLLECTION].update_one(
                 {"problem_id": problem_id},
                 {"$set": {"acceptance_rate": new_acceptance_rate}}
             )
@@ -377,7 +377,7 @@ async def submit_code(
         raise HTTPException(status_code=500, detail="Failed to submit code")
 
 
-async def update_user_stats_background(
+def update_user_stats_background(
     user_id: str,
     difficulty: DifficultyLevel,
     status: SubmissionStatus,
@@ -387,7 +387,7 @@ async def update_user_stats_background(
 ):
     """Background task to update user statistics."""
     try:
-        await xp_system_service.update_stats_after_submission(
+        get_xp_system_service().update_stats_after_submission(
             user_id, difficulty, status, language, runtime, category
         )
     except Exception as e:
@@ -395,11 +395,11 @@ async def update_user_stats_background(
 
 
 @router.get("/submissions")
-async def get_user_submissions(
+def get_user_submissions(
     limit: int = 20,
     offset: int = 0,
     status_filter: Optional[SubmissionStatus] = None,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_student)
 ):
     """
     Get user's submission history.
@@ -444,7 +444,7 @@ async def get_user_submissions(
         ]
         
         submissions = []
-        async for doc in db[CODE_SUBMISSIONS_COLLECTION].aggregate(pipeline):
+        for doc in db[CODE_SUBMISSIONS_COLLECTION].aggregate(pipeline):
             submissions.append(doc)
         
         return submissions
@@ -455,19 +455,19 @@ async def get_user_submissions(
 
 
 @router.get("/stats")
-async def get_user_stats(current_user: dict = Depends(get_current_user)):
+def get_user_stats(current_user: dict = Depends(require_student)):
     """
     Get user's coding statistics and progress.
     """
     try:
-        stats = await xp_system_service.get_user_stats(current_user["id"])
+        stats = get_xp_system_service().get_user_stats(current_user["id"])
         
         if not stats:
             # Create new stats for new user
-            stats = await xp_system_service.create_user_stats(current_user["id"])
+            stats = get_xp_system_service().create_user_stats(current_user["id"])
         
         # Get user's global rank
-        global_rank = await xp_system_service.get_user_rank_position(current_user["id"])
+        global_rank = get_xp_system_service().get_user_rank_position(current_user["id"])
         
         return {
             "total_xp": stats.total_xp,
@@ -509,12 +509,12 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
 
 
 @router.get("/leaderboard")
-async def get_leaderboard(limit: int = 50):
+def get_leaderboard(limit: int = 50):
     """
     Get global leaderboard.
     """
     try:
-        leaderboard = await xp_system_service.get_leaderboard(limit)
+        leaderboard = get_xp_system_service().get_leaderboard(limit)
         return leaderboard
         
     except Exception as e:

@@ -110,6 +110,7 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
             "check_name": "Email Present",
             "passed": True,
             "score": 7,
+            "max_score": 7,
             "message": "Email address found"
         })
     else:
@@ -117,6 +118,7 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
             "check_name": "Email Present",
             "passed": False,
             "score": 0,
+            "max_score": 7,
             "message": "Email address missing"
         })
     
@@ -126,7 +128,16 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
             "check_name": "Phone Present",
             "passed": True,
             "score": 7,
+            "max_score": 7,
             "message": "Phone number found"
+        })
+    else:
+        checks.append({
+            "check_name": "Phone Present",
+            "passed": False,
+            "score": 0,
+            "max_score": 7,
+            "message": "Phone number missing"
         })
     
     if parsed_data.get("location"):
@@ -135,7 +146,16 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
             "check_name": "Location Present",
             "passed": True,
             "score": 6,
+            "max_score": 6,
             "message": "Location information found"
+        })
+    else:
+        checks.append({
+            "check_name": "Location Present",
+            "passed": False,
+            "score": 0,
+            "max_score": 6,
+            "message": "Location information missing"
         })
     
     total_score += contact_score
@@ -150,6 +170,7 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
         "check_name": "Section Detection",
         "passed": detected >= 4,
         "score": section_score,
+        "max_score": 25,
         "message": f"{detected}/{len(required_sections)} standard sections detected"
     })
     
@@ -163,6 +184,7 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
         "check_name": "Keyword Density",
         "passed": total_skills >= 8,
         "score": keyword_score,
+        "max_score": 20,
         "message": f"{total_skills} technical skills/keywords identified"
     })
     
@@ -176,6 +198,7 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
         "check_name": "Formatting & Structure",
         "passed": format_score >= 18,
         "score": format_score,
+        "max_score": 20,
         "message": "Resume structure is ATS-friendly"
     })
     
@@ -194,6 +217,7 @@ def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
         "check_name": "Experience Detail",
         "passed": exp_detail_score >= 10,
         "score": exp_detail_score,
+        "max_score": 15,
         "message": f"Experience entries have sufficient detail"
     })
     
