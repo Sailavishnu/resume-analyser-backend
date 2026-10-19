@@ -8,7 +8,7 @@ from typing import Optional
 from app.core.dependencies import get_current_user
 from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse, PaginatedResponse, MessageResponse
-from app.schemas.notifications import NotificationOut, NotificationUpdateRequest
+from app.schemas.notifications import NotificationOut
 from app.services.notification_service import NotificationService
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
@@ -51,18 +51,17 @@ async def get_unread_count(
     return DataResponse(data={"unread_count": count})
 
 
-@router.patch("/{notification_id}/read", response_model=DataResponse[NotificationOut])
+@router.delete("/{notification_id}", response_model=MessageResponse)
 async def mark_notification_as_read(
     notification_id: str,
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(get_database)
 ):
-    """Mark notification as read."""
+    """Dismiss a notification the user has seen."""
     notification_service = NotificationService(db)
     
-    notification = await notification_service.mark_as_read(notification_id, current_user["id"])
-    
-    return DataResponse(data=NotificationOut(**notification))
+    await notification_service.mark_as_read(notification_id, current_user["id"])
+    return MessageResponse(message="Notification dismissed")
 
 
 @router.post("/read-all", response_model=MessageResponse)
@@ -70,9 +69,9 @@ async def mark_all_as_read(
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(get_database)
 ):
-    """Mark all notifications as read."""
+    """Delete notifications the user has seen or cleared."""
     notification_service = NotificationService(db)
     
     count = await notification_service.mark_all_as_read(current_user["id"])
     
-    return MessageResponse(message=f"Marked {count} notifications as read")
+    return MessageResponse(message=f"Cleared {count} notifications")

@@ -39,11 +39,16 @@ class NotificationService:
         
         for notif in notifications:
             notif["id"] = str(notif["_id"])
+            notif["user_id"] = str(notif["user_id"])
+            if notif.get("related_entity_id") is not None:
+                notif["related_entity_id"] = str(notif["related_entity_id"])
         
         return notifications, pagination
     
     async def mark_as_read(self, notification_id: str, user_id: str) -> Dict[str, Any]:
-        """Mark notification as read."""
+        """Dismiss a notification after it has been seen."""
+        if not ObjectId.is_valid(notification_id):
+            raise NotFoundError("Notification")
         notif = self.db[C.NOTIFICATIONS].find_one({"_id": ObjectId(notification_id)})
         if not notif:
             raise NotFoundError("Notification")
@@ -51,23 +56,14 @@ class NotificationService:
         if str(notif["user_id"]) != user_id:
             raise ForbiddenError("Cannot access this notification")
         
-        self.db[C.NOTIFICATIONS].update_one(
-            {"_id": ObjectId(notification_id)},
-            {"$set": {"is_read": True, "read_at": utc_now()}}
-        )
-        
-        notif["is_read"] = True
-        notif["id"] = str(notif["_id"])
+        self.db[C.NOTIFICATIONS].delete_one({"_id": ObjectId(notification_id), "user_id": ObjectId(user_id)})
         return notif
     
     async def mark_all_as_read(self, user_id: str) -> int:
-        """Mark all notifications as read for user."""
-        result = self.db[C.NOTIFICATIONS].update_many(
-            {"user_id": ObjectId(user_id), "is_read": False},
-            {"$set": {"is_read": True, "read_at": utc_now()}}
-        )
+        """Delete all notifications after the user clears them."""
+        result = self.db[C.NOTIFICATIONS].delete_many({"user_id": ObjectId(user_id)})
         
-        return result.modified_count
+        return result.deleted_count
     
     async def get_unread_count(self, user_id: str) -> int:
         """Get count of unread notifications."""

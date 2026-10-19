@@ -33,14 +33,14 @@ from app.ml.predictor import predictor
 
 # Import all API routers
 from app.api import (
-    auth, users, admin, resumes, ats, jd_match, jobs, 
-    applications, candidates, notifications, analytics, interviews, coding
+    auth, users, admin, resumes, ats, jd_match, jobs,
+    applications, candidates, notifications, analytics, interviews, messages, practice
 )
 
 
 # ─── FastAPI Application Setup ────────────────────────────────────────────
 
-app = FastAPI(
+api_app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     description="Complete Resume AI & Placement Platform API with ML-powered job matching",
@@ -57,7 +57,7 @@ app = FastAPI(
 
 # ─── CORS Middleware ──────────────────────────────────────────────────────
 
-app.add_middleware(
+api_app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
@@ -68,14 +68,14 @@ app.add_middleware(
 
 # ─── Exception Handlers ───────────────────────────────────────────────────
 
-app.add_exception_handler(AppError, app_error_handler)
-app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(Exception, unhandled_exception_handler)
+api_app.add_exception_handler(AppError, app_error_handler)
+api_app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+api_app.add_exception_handler(RequestValidationError, validation_exception_handler)
+api_app.add_exception_handler(Exception, unhandled_exception_handler)
 
 # ─── Startup & Shutdown Events ────────────────────────────────────────────
 
-@app.on_event("startup")
+@api_app.on_event("startup")
 async def startup_event():
     """Initialize services on application startup."""
     print(f"🚀 Starting {settings.PROJECT_NAME} v{settings.VERSION}")
@@ -83,6 +83,17 @@ async def startup_event():
     # Connect to MongoDB
     try:
         connect_db()
+        from app.cloud.mongodb import get_db
+        db = get_db()
+        db["conversations"].create_index([("participants", 1), ("updated_at", -1)])
+        db["messages"].create_index([("conversation_id", 1), ("created_at", 1)])
+        db["notifications"].create_index([("user_id", 1), ("is_read", 1), ("created_at", -1)])
+        db["practice_attempts"].create_index([("user_id", 1), ("created_at", -1)])
+        db["practice_attempts"].create_index(
+            [("user_id", 1), ("submission_id", 1)],
+            unique=True,
+            partialFilterExpression={"submission_id": {"$type": "string"}},
+        )
         print("✅ MongoDB connection established")
     except Exception as e:
         print(f"❌ MongoDB connection failed: {e}")
@@ -118,7 +129,7 @@ async def startup_event():
     print(f"📊 Health Check: http://{settings.HOST}:{settings.PORT}/health")
 
 
-@app.on_event("shutdown")
+@api_app.on_event("shutdown")
 async def shutdown_event():
     """Clean up resources on application shutdown."""
     print("🛑 Shutting down Resume AI Platform...")
@@ -132,43 +143,43 @@ async def shutdown_event():
 # ─── API Route Registration ───────────────────────────────────────────────
 
 # Authentication & User Management
-app.include_router(auth.router, prefix=settings.API_V1_STR)
-app.include_router(users.router, prefix=settings.API_V1_STR)
+api_app.include_router(auth.router, prefix=settings.API_V1_STR)
+api_app.include_router(users.router, prefix=settings.API_V1_STR)
 
 # Resume Management & Analysis
-app.include_router(resumes.router, prefix=settings.API_V1_STR)
-app.include_router(ats.router, prefix=settings.API_V1_STR)
+api_app.include_router(resumes.router, prefix=settings.API_V1_STR)
+api_app.include_router(ats.router, prefix=settings.API_V1_STR)
 
 # Job Matching & Applications
-app.include_router(jobs.router, prefix=settings.API_V1_STR)
-app.include_router(jd_match.router, prefix=settings.API_V1_STR)
-app.include_router(applications.router, prefix=settings.API_V1_STR)
+api_app.include_router(jobs.router, prefix=settings.API_V1_STR)
+api_app.include_router(jd_match.router, prefix=settings.API_V1_STR)
+api_app.include_router(applications.router, prefix=settings.API_V1_STR)
 
 # Master Admin Console & System Control
-app.include_router(admin.router, prefix=settings.API_V1_STR)
+api_app.include_router(admin.router, prefix=settings.API_V1_STR)
 
 # HR & Candidate Management
-app.include_router(candidates.router, prefix=settings.API_V1_STR)
+api_app.include_router(candidates.router, prefix=settings.API_V1_STR)
 
 # Notifications & Analytics
-app.include_router(notifications.router, prefix=settings.API_V1_STR)
-app.include_router(analytics.router, prefix=settings.API_V1_STR)
+api_app.include_router(notifications.router, prefix=settings.API_V1_STR)
+api_app.include_router(analytics.router, prefix=settings.API_V1_STR)
+api_app.include_router(practice.router, prefix=settings.API_V1_STR)
 
 # AI Mock Interviews
-app.include_router(interviews.router, prefix=settings.API_V1_STR)
+api_app.include_router(interviews.router, prefix=settings.API_V1_STR)
 
-# Coding Practice Platform
-app.include_router(coding.router, prefix=settings.API_V1_STR)
+api_app.include_router(messages.router, prefix=settings.API_V1_STR)
 
 # Static files for local uploads fallback
 from fastapi.staticfiles import StaticFiles
 import os
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+api_app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 
 # ─── Root & Health Endpoints ──────────────────────────────────────────────
 
-@app.get("/")
+@api_app.get("/")
 async def root():
     """API root endpoint with service information."""
     return {
@@ -196,7 +207,7 @@ async def root():
     }
 
 
-@app.get("/health")
+@api_app.get("/health")
 async def health_check():
     """Comprehensive health check endpoint."""
     health_status = {
@@ -316,6 +327,54 @@ def start_server():
         reload=True,
         log_level="info"
     )
+
+
+import socketio
+
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=settings.cors_origins_list)
+
+
+@sio.event
+async def connect(sid, environ, auth=None):
+    from app.core.security import decode_access_token
+    from app.cloud.mongodb import get_db
+    from bson import ObjectId
+
+    token = (auth or {}).get("token")
+    if not token:
+        return False
+    try:
+        user_id = decode_access_token(token).get("sub")
+        user = get_db()["users"].find_one({"_id": ObjectId(user_id), "is_active": {"$ne": False}})
+        if not user or user.get("role") not in {"student", "hr"}:
+            return False
+        await sio.save_session(sid, {"user_id": str(user["_id"]), "role": user["role"]})
+        await sio.enter_room(sid, f"user:{user['_id']}")
+    except Exception:
+        return False
+
+
+@sio.on("message:send")
+async def socket_send_message(sid, payload):
+    from app.cloud.mongodb import get_db
+    from app.api.messages import persist_message
+    session = await sio.get_session(sid)
+    message, notification = persist_message(get_db(), session["user_id"], payload.get("conversation_id"), payload.get("body"))
+    if message:
+        conversation = get_db()["conversations"].find_one({"_id": ObjectId(payload.get("conversation_id"))})
+        for participant in conversation["participants"]:
+            await sio.emit("message:new", message, room=f"user:{participant}")
+        if notification:
+            await sio.emit("notification:new", notification, room=f"user:{notification['user_id']}")
+
+
+@sio.event
+async def disconnect(sid, reason=None):
+    return
+
+
+from bson import ObjectId
+app = socketio.ASGIApp(sio, other_asgi_app=api_app, socketio_path="socket.io")
 
 
 if __name__ == "__main__":

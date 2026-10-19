@@ -7,6 +7,7 @@ Uses the Gemini API key from .env to generate:
 3. Deep answer evaluation and adaptive multi-turn follow-ups.
 Falls back automatically to local Sentence-BERT NLP if the API key is unavailable or rate-limited.
 """
+import asyncio
 import os
 import json
 import logging
@@ -162,6 +163,41 @@ Source bullets:
             return validated
         except (ValueError, TypeError, KeyError) as e:
             logger.warning("[GeminiService] Failed to parse resume enhancements: %s", e)
+            return None
+
+    async def evaluate_practice_writing(
+        self, challenge_name: str, instructions: str, candidate_profile: Any, answer: str,
+        target_role: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Score a writing exercise against its supplied facts and rubric."""
+        prompt = f"""
+Evaluate a student's resume-writing practice response. This is feedback for learning, not hiring.
+Challenge: {challenge_name}
+Instructions: {instructions}
+Target role: {target_role or 'Use the role named in the challenge context'}
+Candidate facts (the only facts the student may claim): {json.dumps(candidate_profile, ensure_ascii=False)}
+Student response: {json.dumps(answer, ensure_ascii=False)}
+
+Score 0-100 using these criteria (each 0-100): clarity, relevance, specificity, evidence_fidelity.
+Reward useful detail only when supported by the candidate facts. Do not reward invented metrics,
+skills, results, seniority, or responsibilities. Treat omissions as opportunities for improvement,
+not proof the candidate lacks a skill. Give concise, actionable strengths and improvements.
+An optional suggestedAnswer must use only supported facts and must not add metrics or achievements.
+Return only valid JSON in this shape:
+{{"score": 0, "criteriaScores": {{"clarity": 0, "relevance": 0, "specificity": 0, "evidence_fidelity": 0}},
+"feedback": {{"strengths": ["..."], "improvements": ["..."], "explanation": "..."}}, "suggestedAnswer": "..."}}
+"""
+        response_text = await asyncio.to_thread(self._call_gemini, prompt, temperature=0.2)
+        if not response_text:
+            return None
+        try:
+            cleaned = response_text.replace("```json", "").replace("```", "").strip()
+            result = json.loads(cleaned)
+            if not isinstance(result, dict):
+                return None
+            return result
+        except (ValueError, TypeError) as exc:
+            logger.warning("[GeminiService] Failed to parse practice writing evaluation: %s", exc)
             return None
 
     def generate_general_domain_questions(
