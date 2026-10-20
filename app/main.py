@@ -35,7 +35,7 @@ from app.ml.predictor import predictor
 # Import all API routers
 from app.api import (
     auth, users, admin, resumes, ats, jd_match, jobs,
-    applications, candidates, notifications, analytics, interviews, messages, practice
+    applications, candidates, notifications, analytics, interviews, messages, practice, roadmap
 )
 
 
@@ -114,6 +114,7 @@ async def startup_event():
         db["messages"].create_index([("conversation_id", 1), ("created_at", 1)])
         db["notifications"].create_index([("user_id", 1), ("is_read", 1), ("created_at", -1)])
         db[C.PRACTICE_HISTORY].create_index([("user_id", 1), ("timestamp", -1)])
+        db[C.ROADMAPS].create_index("student_id", unique=True)
         print("✅ MongoDB connection established")
     except Exception as e:
         print(f"❌ MongoDB connection failed: {e}")
@@ -185,6 +186,7 @@ api_app.include_router(candidates.router, prefix=settings.API_V1_STR)
 api_app.include_router(notifications.router, prefix=settings.API_V1_STR)
 api_app.include_router(analytics.router, prefix=settings.API_V1_STR)
 api_app.include_router(practice.router, prefix=settings.API_V1_STR)
+api_app.include_router(roadmap.router, prefix=settings.API_V1_STR)
 
 # AI Mock Interviews
 api_app.include_router(interviews.router, prefix=settings.API_V1_STR)

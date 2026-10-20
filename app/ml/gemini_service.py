@@ -32,7 +32,10 @@ class GeminiInterviewService:
             "gemini-pro-latest"
         ]
 
-    def _call_gemini(self, prompt: str, temperature: float = 0.7) -> Optional[str]:
+    def _call_gemini(
+        self, prompt: str, temperature: float = 0.7,
+        max_output_tokens: int = 1024, timeout: int = 12,
+    ) -> Optional[str]:
         """Execute a text generation call to Gemini with model fallback."""
         if not self.api_key:
             logger.warning("[GeminiService] GEMINI_API_KEY is not set.")
@@ -43,14 +46,14 @@ class GeminiInterviewService:
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": temperature,
-                "maxOutputTokens": 1024
+                "maxOutputTokens": max_output_tokens
             }
         }
 
         for model_name in self.models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
             try:
-                res = requests.post(url, headers=headers, json=payload, timeout=12)
+                res = requests.post(url, headers=headers, json=payload, timeout=timeout)
                 if res.status_code == 200:
                     data = res.json()
                     candidates = data.get("candidates", [])
@@ -311,6 +314,79 @@ Scores and score are integers from 0 to 100. Keep feedback specific and concise.
             }
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("[GeminiService] Failed to parse coding practice evaluation: %s", exc)
+            return None
+
+    async def generate_career_roadmap(self, intake: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Build a realistic, role-specific learning plan from a student's current skills and time."""
+        weeks = int(intake["timeframeWeeks"])
+        prompt = f"""
+You are a practical career mentor. Build a personalized roadmap for this student's chosen target role.
+Student profile and constraints:
+{json.dumps(intake, ensure_ascii=False)}
+
+Create exactly 4 to 6 sequential phases that fit within exactly {weeks} weeks and the stated weekly study hours.
+Use current knowledge to avoid reteaching mastered topics; identify gaps and order prerequisites realistically.
+Include hands-on deliverables in every phase. Include communication and other soft-skill practice in relevant phases,
+based on the student's self-ratings. Provide a weekly plan that is sustainable at the student's available hours.
+Do not promise employment or invent prior skills. Do not use generic fixed curricula unrelated to the role.
+Do not include URLs or claim that any course/resource is verified. Make tasks concrete, measurable, and student-friendly.
+
+Return only valid JSON in this exact shape:
+{{"title":"short role-specific title","summary":"brief explanation of this plan's focus","phases":[
+{{"title":"phase title","durationWeeks":2,"goal":"specific outcome","topics":["..."],"activities":["..."],"deliverables":["..."],"softSkills":["..."]}}
+]}}
+Use integer durationWeeks values whose sum is exactly {weeks}. Include 3-7 topics, 2-5 activities,
+1-3 deliverables, and 1-3 softSkills items per phase. Return no markdown fences.
+"""
+        response_text = await asyncio.to_thread(
+            self._call_gemini, prompt, temperature=0.45, max_output_tokens=4096, timeout=45,
+        )
+        if not response_text:
+            return None
+        try:
+            cleaned = response_text.replace("```json", "").replace("```", "").strip()
+            result = json.loads(cleaned)
+            if not isinstance(result, dict) or not isinstance(result.get("phases"), list):
+                return None
+            title = str(result.get("title", "")).strip()
+            summary = str(result.get("summary", "")).strip()
+            raw_phases = result["phases"]
+            if not title or len(title) > 140 or not summary or len(summary) > 1600 or not 4 <= len(raw_phases) <= 6:
+                return None
+            phases = []
+            for phase in raw_phases:
+                if not isinstance(phase, dict):
+                    return None
+                duration = int(phase.get("durationWeeks", 0))
+                phase_title = str(phase.get("title", "")).strip()
+                goal = str(phase.get("goal", "")).strip()
+                if duration < 1 or not phase_title or len(phase_title) > 140 or not goal or len(goal) > 1000:
+                    return None
+                normalized_lists = {}
+                for field, maximum in (("topics", 8), ("activities", 6), ("deliverables", 4), ("softSkills", 4)):
+                    values = phase.get(field)
+                    if not isinstance(values, list) or not values:
+                        return None
+                    normalized_lists[field] = [str(item).strip()[:500] for item in values[:maximum] if str(item).strip()]
+                    if not normalized_lists[field]:
+                        return None
+                phases.append({"title": phase_title, "durationWeeks": duration, "goal": goal, **normalized_lists})
+            total = sum(phase["durationWeeks"] for phase in phases)
+            if total != weeks:
+                # Preserve Gemini's relative phase weights while matching the requested timeframe exactly.
+                scaled = [max(1, round(phase["durationWeeks"] * weeks / total)) for phase in phases]
+                while sum(scaled) < weeks:
+                    scaled[min(range(len(scaled)), key=lambda index: scaled[index])] += 1
+                while sum(scaled) > weeks:
+                    eligible = [index for index, value in enumerate(scaled) if value > 1]
+                    if not eligible:
+                        return None
+                    scaled[max(eligible, key=lambda index: scaled[index])] -= 1
+                for phase, duration in zip(phases, scaled):
+                    phase["durationWeeks"] = duration
+            return {"title": title, "summary": summary, "phases": phases, "totalWeeks": weeks}
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("[GeminiService] Failed to parse career roadmap: %s", exc)
             return None
 
     def generate_general_domain_questions(
