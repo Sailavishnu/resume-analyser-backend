@@ -8,7 +8,7 @@ from pymongo.database import Database
 from app.cloud.mongodb import get_database
 from app.core.dependencies import require_student
 from app.schemas.common import DataResponse
-from app.schemas.practice import PracticeAttemptRequest
+from app.schemas.practice import CodingEvaluationRequest, CodingQuestionRequest, PracticeAttemptRequest
 from app.services.practice_service import PracticeService
 
 
@@ -44,14 +44,36 @@ async def submit_attempt(
 ):
     attempt = await PracticeService(db).submit_attempt(
         current_user["id"], payload.challengeId, payload.answer,
-        payload.targetRole, payload.submissionId,
+        payload.targetRole,
     )
     return DataResponse(data=attempt)
 
 
+@router.post("/coding/question", response_model=DataResponse[dict])
+async def generate_coding_question(
+    payload: CodingQuestionRequest,
+    current_user: dict = Depends(require_student),
+    db: Database = Depends(get_database),
+):
+    question = await PracticeService(db).generate_coding_question(payload.targetRole)
+    return DataResponse(data=question)
+
+
+@router.post("/coding/evaluate", response_model=DataResponse[dict])
+async def evaluate_coding_answer(
+    payload: CodingEvaluationRequest,
+    current_user: dict = Depends(require_student),
+    db: Database = Depends(get_database),
+):
+    result = await PracticeService(db).evaluate_coding_answer(
+        current_user["id"], payload.targetRole, payload.question, payload.answer,
+    )
+    return DataResponse(data=result)
+
+
 @router.get("/attempts", response_model=DataResponse[dict])
 async def list_attempts(
-    challenge_type: Literal["resume", "job-readiness"] | None = Query(default=None, alias="type"),
+    challenge_type: Literal["resume", "job-readiness", "coding"] | None = Query(default=None, alias="type"),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user: dict = Depends(require_student),
@@ -61,18 +83,9 @@ async def list_attempts(
     return DataResponse(data=result)
 
 
-@router.get("/attempts/{attempt_id}", response_model=DataResponse[dict])
-async def get_attempt(
-    attempt_id: str,
-    current_user: dict = Depends(require_student),
-    db: Database = Depends(get_database),
-):
-    return DataResponse(data=PracticeService(db).get_attempt(current_user["id"], attempt_id))
-
-
 @router.get("/stats", response_model=DataResponse[dict])
 async def get_practice_stats(
-    challenge_type: Literal["all", "resume", "job-readiness"] = Query(default="all", alias="type"),
+    challenge_type: Literal["all", "resume", "job-readiness", "coding"] = Query(default="all", alias="type"),
     current_user: dict = Depends(require_student),
     db: Database = Depends(get_database),
 ):

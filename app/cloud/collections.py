@@ -38,6 +38,7 @@ NOTIFICATIONS              = "notifications"
 ACTIVITIES                 = "activities"
 CAREER_READINESS_HISTORY   = "career_readiness_history"
 PRACTICE_ATTEMPTS          = "practice_attempts"
+PRACTICE_HISTORY           = "practice_history"
 
 JOB_REPORTS                = "job_reports"
 AUDIT_LOGS                 = "audit_logs"

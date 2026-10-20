@@ -4,8 +4,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from bson import ObjectId
-from pymongo.errors import DuplicateKeyError
-
 from app.cloud import collections as C
 from app.core.exceptions import NotFoundError, ProcessingError, ValidationError
 from app.ml.gemini_service import gemini_interview_service
@@ -168,7 +166,7 @@ def _score_set_selection(selected: set[str], expected: set[str]) -> tuple[int, d
 class PracticeService:
     def __init__(self, db):
         self.db = db
-        self.attempts = db[C.PRACTICE_ATTEMPTS]
+        self.history = db[C.PRACTICE_HISTORY]
 
     def list_challenges(self, challenge_type: str | None = None, difficulty: str | None = None, target_role: str | None = None) -> list[dict[str, Any]]:
         return [
@@ -185,49 +183,68 @@ class PracticeService:
         challenge = _challenge_variant(challenge_id, target_role)
         return _public_challenge(challenge_id, challenge)
 
-    async def submit_attempt(self, student_id: str, challenge_id: str, answer: dict[str, Any], target_role: str | None, submission_id: str | None) -> dict[str, Any]:
+    async def submit_attempt(self, student_id: str, challenge_id: str, answer: dict[str, Any], target_role: str | None) -> dict[str, Any]:
         if challenge_id not in CHALLENGES:
             raise NotFoundError("Practice challenge not found")
         challenge = _challenge_variant(challenge_id, target_role)
         if target_role and target_role not in challenge["targetRoles"]:
             raise ValidationError("Select a target role supported by this challenge")
-        if submission_id:
-            existing = self.attempts.find_one({"user_id": ObjectId(student_id), "submission_id": submission_id})
-            if existing:
-                return self._serialize(existing)
-
         score, criteria, feedback, suggested = await self._evaluate(challenge, answer, target_role)
         created = datetime.now(timezone.utc)
-        attempt_number = self.attempts.count_documents({
-            "user_id": ObjectId(student_id), "challenge_id": challenge_id, "status": "completed",
-        }) + 1
-        doc = {
+        self.history.insert_one({
             "user_id": ObjectId(student_id),
-            "challenge_id": challenge_id,
-            "challenge_type": challenge["type"],
-            "challenge_name": challenge["title"],
-            "challenge_version": 1,
-            "attempt_number": attempt_number,
-            "target_role": target_role or (challenge["targetRoles"][0] if challenge["targetRoles"] else None),
-            "submitted_answer": answer,
+            "practice_type": challenge["type"],
+            "timestamp": created,
             "score": score,
-            "criteria_scores": criteria,
-            "feedback": feedback,
-            "suggested_answer": suggested,
-            "status": "completed",
-            "submission_id": submission_id,
-            "created_at": created,
-            "completed_at": created,
+        })
+        # Return the report for this request only; answer and feedback are never persisted.
+        return {"score": score, "criteriaScores": criteria, "feedback": feedback,
+                "suggestedAnswer": suggested, "createdAt": created.isoformat()}
+
+    async def generate_coding_question(self, target_role: str) -> dict[str, Any]:
+        role = target_role.strip()
+        if not role or len(role) > 100:
+            raise ValidationError("Enter a target role between 1 and 100 characters")
+        question = await gemini_interview_service.generate_practice_coding_question(role)
+        if not question:
+            raise ProcessingError("Gemini could not generate a coding question. Check GEMINI_API_KEY and retry.")
+        return {"targetRole": role, **question}
+
+    async def evaluate_coding_answer(
+        self, student_id: str, target_role: str, question: dict[str, Any], answer: str,
+    ) -> dict[str, Any]:
+        role = target_role.strip()
+        if not role or len(role) > 100:
+            raise ValidationError("Enter a target role between 1 and 100 characters")
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > 20000:
+            raise ValidationError("Your code answer must contain between 1 and 20,000 characters")
+        if not isinstance(question, dict) or not question.get("question") or not question.get("language"):
+            raise ValidationError("Generate a valid coding question before submitting")
+        raw_constraints = question.get("constraints", [])
+        raw_test_cases = question.get("testCases", [])
+        if not isinstance(raw_constraints, list) or not isinstance(raw_test_cases, list):
+            raise ValidationError("The coding question has invalid constraints or test cases")
+        safe_question = {
+            "title": str(question.get("title", "Coding practice"))[:160],
+            "question": str(question["question"])[:5000],
+            "language": str(question["language"])[:80],
+            "constraints": [str(item)[:400] for item in raw_constraints[:4]],
+            "testCases": [
+                {"input": str(item.get("input", ""))[:1200], "expectedOutput": str(item.get("expectedOutput", ""))[:1200]}
+                for item in raw_test_cases[:4] if isinstance(item, dict)
+            ],
         }
-        try:
-            result = self.attempts.insert_one(doc)
-        except DuplicateKeyError:
-            existing = self.attempts.find_one({"user_id": ObjectId(student_id), "submission_id": submission_id})
-            if existing:
-                return self._serialize(existing)
-            raise
-        doc["_id"] = result.inserted_id
-        return self._serialize(doc)
+        evaluation = await gemini_interview_service.evaluate_practice_code(role, safe_question, answer)
+        if not evaluation:
+            raise ProcessingError("Gemini could not evaluate this answer. Check GEMINI_API_KEY and retry.")
+        created = datetime.now(timezone.utc)
+        self.history.insert_one({
+            "user_id": ObjectId(student_id),
+            "practice_type": "coding",
+            "timestamp": created,
+            "score": evaluation["score"],
+        })
+        return {**evaluation, "createdAt": created.isoformat()}
 
     async def _evaluate(self, challenge: dict[str, Any], answer: dict[str, Any], target_role: str | None = None):
         evaluation = challenge["evaluation"]
@@ -324,46 +341,34 @@ class PracticeService:
             raise ProcessingError("AI returned an invalid evaluation. The attempt was not saved; please retry.")
 
     def list_attempts(self, student_id: str, challenge_type: str | None, limit: int, offset: int) -> dict[str, Any]:
-        query: dict[str, Any] = {"user_id": ObjectId(student_id), "status": "completed"}
+        query: dict[str, Any] = {"user_id": ObjectId(student_id)}
         if challenge_type:
-            query["challenge_type"] = challenge_type
-        total = self.attempts.count_documents(query)
-        items = [self._serialize(doc) for doc in self.attempts.find(query).sort("created_at", -1).skip(offset).limit(limit)]
+            query["practice_type"] = challenge_type
+        total = self.history.count_documents(query)
+        items = [self._serialize_history(doc) for doc in self.history.find(query).sort("timestamp", -1).skip(offset).limit(limit)]
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
-    def get_attempt(self, student_id: str, attempt_id: str) -> dict[str, Any]:
-        if not ObjectId.is_valid(attempt_id):
-            raise NotFoundError("Practice attempt not found")
-        attempt = self.attempts.find_one({"_id": ObjectId(attempt_id), "user_id": ObjectId(student_id), "status": "completed"})
-        if not attempt:
-            raise NotFoundError("Practice attempt not found")
-        return self._serialize(attempt)
-
     def get_stats(self, student_id: str, challenge_type: str | None) -> dict[str, Any]:
-        query: dict[str, Any] = {"user_id": ObjectId(student_id), "status": "completed"}
+        query: dict[str, Any] = {"user_id": ObjectId(student_id)}
         if challenge_type:
-            query["challenge_type"] = challenge_type
-        docs = list(self.attempts.find(query).sort("created_at", 1))
-        resume_scores = [doc["score"] for doc in docs if doc["challenge_type"] == "resume"]
-        readiness_scores = [doc["score"] for doc in docs if doc["challenge_type"] == "job-readiness"]
+            query["practice_type"] = challenge_type
+        docs = list(self.history.find(query).sort("timestamp", 1))
+        resume_scores = [doc["score"] for doc in docs if doc["practice_type"] == "resume"]
+        readiness_scores = [doc["score"] for doc in docs if doc["practice_type"] == "job-readiness"]
+        coding_scores = [doc["score"] for doc in docs if doc["practice_type"] == "coding"]
         scores = [doc["score"] for doc in docs]
         average = lambda values: round(sum(values) / len(values), 1) if values else None
         chart = [{
-            "attemptId": str(doc["_id"]), "date": doc["created_at"].isoformat(),
-            "type": doc["challenge_type"], "challengeName": doc["challenge_name"], "score": doc["score"],
+            "date": doc["timestamp"].isoformat(),
+            "type": doc["practice_type"], "score": doc["score"],
         } for doc in docs]
         return {"summary": {"totalAttempts": len(docs), "resumeAverage": average(resume_scores),
-                            "jobReadinessAverage": average(readiness_scores), "overallAverage": average(scores)}, "chart": chart}
+                            "jobReadinessAverage": average(readiness_scores), "codingAverage": average(coding_scores),
+                            "overallAverage": average(scores)}, "chart": chart}
 
     @staticmethod
-    def _serialize(doc: dict[str, Any]) -> dict[str, Any]:
+    def _serialize_history(doc: dict[str, Any]) -> dict[str, Any]:
         return {
-            "id": str(doc["_id"]), "challengeId": doc["challenge_id"],
-            "challengeType": doc["challenge_type"], "challengeName": doc["challenge_name"],
-            "challengeVersion": doc.get("challenge_version", 1), "attemptNumber": doc.get("attempt_number", 1),
-            "targetRole": doc.get("target_role"),
-            "submittedAnswer": doc["submitted_answer"], "score": doc["score"],
-            "criteriaScores": doc.get("criteria_scores", {}), "feedback": doc.get("feedback", {}),
-            "suggestedAnswer": doc.get("suggested_answer"), "status": doc["status"],
-            "createdAt": doc["created_at"].isoformat(), "completedAt": doc["completed_at"].isoformat(),
+            "id": str(doc["_id"]), "practiceType": doc["practice_type"],
+            "score": doc["score"], "timestamp": doc["timestamp"].isoformat(),
         }

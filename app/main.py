@@ -29,6 +29,7 @@ from app.core.exceptions import (
     unhandled_exception_handler
 )
 from app.cloud.mongodb import connect_db, close_db
+from app.cloud import collections as C
 from app.ml.predictor import predictor
 
 # Import all API routers
@@ -85,15 +86,34 @@ async def startup_event():
         connect_db()
         from app.cloud.mongodb import get_db
         db = get_db()
+        # Retain legacy practice scores, but migrate them into the metadata-only
+        # history collection and discard the old answer/evaluation documents.
+        if C.PRACTICE_ATTEMPTS in db.list_collection_names():
+            legacy = db[C.PRACTICE_ATTEMPTS]
+            for old in legacy.find(
+                {"status": "completed"},
+                {"user_id": 1, "challenge_type": 1, "score": 1, "created_at": 1},
+            ):
+                if (old.get("challenge_type") not in {"resume", "job-readiness"}
+                        or not isinstance(old.get("score"), (int, float))
+                        or old.get("created_at") is None or old.get("user_id") is None):
+                    continue
+                db[C.PRACTICE_HISTORY].replace_one(
+                    {"_id": old["_id"]},
+                    {
+                        "_id": old["_id"],
+                        "user_id": old["user_id"],
+                        "practice_type": old["challenge_type"],
+                        "timestamp": old["created_at"],
+                        "score": max(0, min(100, round(old["score"]))),
+                    },
+                    upsert=True,
+                )
+            legacy.drop()
         db["conversations"].create_index([("participants", 1), ("updated_at", -1)])
         db["messages"].create_index([("conversation_id", 1), ("created_at", 1)])
         db["notifications"].create_index([("user_id", 1), ("is_read", 1), ("created_at", -1)])
-        db["practice_attempts"].create_index([("user_id", 1), ("created_at", -1)])
-        db["practice_attempts"].create_index(
-            [("user_id", 1), ("submission_id", 1)],
-            unique=True,
-            partialFilterExpression={"submission_id": {"$type": "string"}},
-        )
+        db[C.PRACTICE_HISTORY].create_index([("user_id", 1), ("timestamp", -1)])
         print("✅ MongoDB connection established")
     except Exception as e:
         print(f"❌ MongoDB connection failed: {e}")
