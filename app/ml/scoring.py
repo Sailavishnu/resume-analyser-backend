@@ -96,132 +96,82 @@ def calculate_resume_health_score(parsed_data: dict) -> tuple[int, dict]:
 
 def calculate_ats_score(parsed_data: dict) -> tuple[int, list[dict]]:
     """
-    Calculate ATS compatibility score and detailed check results.
-    Returns (overall_score, checks_list).
+    Calculate a transparent, platform-specific ATS readiness estimate.
+    This is not a universal ATS vendor score or job-fit score. Job matching is
+    calculated separately when the student supplies an actual job description.
+    Returns (0-100 score, evidence-backed checks).
     """
     checks = []
     total_score = 0
-    
-    # Contact Information (20 points)
-    contact_score = 0
-    if parsed_data.get("email"):
-        contact_score += 7
-        checks.append({
-            "check_name": "Email Present",
-            "passed": True,
-            "score": 7,
-            "max_score": 7,
-            "message": "Email address found"
-        })
-    else:
-        checks.append({
-            "check_name": "Email Present",
-            "passed": False,
-            "score": 0,
-            "max_score": 7,
-            "message": "Email address missing"
-        })
-    
-    if parsed_data.get("phone"):
-        contact_score += 7
-        checks.append({
-            "check_name": "Phone Present",
-            "passed": True,
-            "score": 7,
-            "max_score": 7,
-            "message": "Phone number found"
-        })
-    else:
-        checks.append({
-            "check_name": "Phone Present",
-            "passed": False,
-            "score": 0,
-            "max_score": 7,
-            "message": "Phone number missing"
-        })
-    
-    if parsed_data.get("location"):
-        contact_score += 6
-        checks.append({
-            "check_name": "Location Present",
-            "passed": True,
-            "score": 6,
-            "max_score": 6,
-            "message": "Location information found"
-        })
-    else:
-        checks.append({
-            "check_name": "Location Present",
-            "passed": False,
-            "score": 0,
-            "max_score": 6,
-            "message": "Location information missing"
-        })
-    
-    total_score += contact_score
-    
-    # Section Detection (25 points)
-    required_sections = ["summary", "experience", "projects", "education", "skills"]
-    detected = sum(1 for s in required_sections if parsed_data.get(s))
-    section_score = int((detected / len(required_sections)) * 25)
-    total_score += section_score
-    
-    checks.append({
-        "check_name": "Section Detection",
-        "passed": detected >= 4,
-        "score": section_score,
-        "max_score": 25,
-        "message": f"{detected}/{len(required_sections)} standard sections detected"
-    })
-    
-    # Keyword Density (20 points)
-    skills = parsed_data.get("skills", {})
-    total_skills = sum(len(skills.get(cat, [])) for cat in skills.keys())
-    keyword_score = min(20, total_skills * 2)
-    total_score += keyword_score
-    
-    checks.append({
-        "check_name": "Keyword Density",
-        "passed": total_skills >= 8,
-        "score": keyword_score,
-        "max_score": 20,
-        "message": f"{total_skills} technical skills/keywords identified"
-    })
-    
-    # Formatting & Readability (20 points)
-    format_score = 15  # Base score for clean parsing
-    if parsed_data.get("summary") and len(parsed_data["summary"]) > 50:
-        format_score += 5
-    total_score += format_score
-    
-    checks.append({
-        "check_name": "Formatting & Structure",
-        "passed": format_score >= 18,
-        "score": format_score,
-        "max_score": 20,
-        "message": "Resume structure is ATS-friendly"
-    })
-    
-    # Experience Detail (15 points)
-    experience = parsed_data.get("experience", [])
-    exp_detail_score = 0
-    for exp in experience:
-        if exp.get("key_points") and len(exp["key_points"]) >= 2:
-            exp_detail_score += 8
-        if exp.get("company") and exp.get("position"):
-            exp_detail_score += 4
-    exp_detail_score = min(15, exp_detail_score)
-    total_score += exp_detail_score
-    
-    checks.append({
-        "check_name": "Experience Detail",
-        "passed": exp_detail_score >= 10,
-        "score": exp_detail_score,
-        "max_score": 15,
-        "message": f"Experience entries have sufficient detail"
-    })
-    
-    return total_score, checks
+
+    def add_check(name: str, score: int, maximum: int, message: str, passed: bool):
+        nonlocal total_score
+        score = max(0, min(maximum, int(score)))
+        total_score += score
+        checks.append({"check_name": name, "passed": passed, "score": score,
+                       "max_score": maximum, "message": message})
+
+    # Contact parse evidence (15). Name, email and phone are independently
+    # verifiable; location is intentionally excluded as it is often optional.
+    contact = sum(5 for key in ("full_name", "email", "phone") if parsed_data.get(key))
+    add_check("Contact details", contact, 15,
+              f"Name: {'found' if parsed_data.get('full_name') else 'not detected'}; email: {'found' if parsed_data.get('email') else 'not detected'}; phone: {'found' if parsed_data.get('phone') else 'not detected'}.",
+              contact >= 10)
+
+    # Recognized resume sections (25). Projects are useful but not required
+    # when work experience is present, so use 5 standard content sections.
+    headings = parsed_data.get("sections_detected") or {}
+    def has_content(value):
+        return any(bool(items) for items in value.values()) if isinstance(value, dict) else bool(value)
+    detected = {
+        "summary": bool(headings.get("summary") or parsed_data.get("summary")),
+        "skills": bool(headings.get("skills") or has_content(parsed_data.get("skills"))),
+        "education": bool(headings.get("education") or parsed_data.get("education")),
+        "experience": bool(headings.get("experience") or parsed_data.get("experience")),
+        "projects": bool(headings.get("projects") or parsed_data.get("projects")),
+    }
+    # Experience and projects are alternatives: a student can demonstrate work
+    # through either. Summary is useful but is not a parser requirement.
+    section_score = (3 * detected["summary"] + 5 * detected["skills"]
+                     + 4 * detected["education"] + 13 * (detected["experience"] or detected["projects"]))
+    visible = [name for name, present in detected.items() if present]
+    add_check("Recognized sections", section_score, 25,
+              f"Recognized: {', '.join(visible) if visible else 'no standard sections'}. Experience and projects count as alternative evidence.",
+              section_score >= 17)
+
+    # Relevant content breadth without the old arbitrary reward for listing
+    # ever more skills. This is not job keyword matching.
+    skill_groups = parsed_data.get("skills") or {}
+    skills = [str(item).strip() for values in skill_groups.values() if isinstance(values, list) for item in values if str(item).strip()]
+    skill_count = len({skill.casefold() for skill in skills})
+    skill_score = min(15, skill_count * 3)
+    add_check("Explicit skills list", skill_score, 15,
+              f"Parsed {skill_count} distinct items from the skills section. Skills mentioned only in project prose are not counted here.",
+              skill_count >= 3)
+
+    quality = parsed_data.get("document_quality") or {}
+    chars = quality.get("characters_extracted", len(parsed_data.get("raw_text", "")))
+    word_count = quality.get("word_count", len(re.findall(r"\b\w+\b", parsed_data.get("raw_text", ""))))
+    # This component measures analyzable text volume only; it makes no visual
+    # layout claim. Short resumes are not automatically penalized as bad resumes.
+    extraction_score = 20 if quality.get("has_text_layer", bool(chars)) and word_count >= 100 else min(20, round(word_count / 100 * 20))
+    if not quality.get("has_text_layer", bool(chars)):
+        extraction_score = 0
+    format_message = f"Extracted {word_count} words ({chars} characters). Text volume supports analysis; visual layout is not assessed."
+    add_check("Text available for analysis", extraction_score, 20, format_message, word_count >= 100)
+
+    # Evidence in experience/project bullets: role details and measurable
+    # outcomes are signals, not claims about an employer's ranking model.
+    entries = (parsed_data.get("experience") or []) + (parsed_data.get("projects") or [])
+    bullets = [str(point) for entry in entries for point in (entry.get("key_points") or [])]
+    quantified = sum(1 for point in bullets if re.search(r"\b\d+(?:\.\d+)?\s*(?:%|x|users?|customers?|hours?|days?|ms|seconds?|\+)?\b", point, re.I))
+    dated = sum(1 for entry in entries if entry.get("date"))
+    evidence_score = min(10, len(entries) * 5) + min(10, len(bullets) * 2) + min(5, quantified)
+    add_check("Experience and project details", evidence_score, 25,
+              f"Parsed {len(entries)} entries, {len(bullets)} detail bullets, {dated} date ranges and {quantified} quantified outcomes.",
+              bool(entries) and bool(bullets))
+
+    return min(100, total_score), checks
 
 
 # ─── Career Readiness Calculation ─────────────────────────────────────────────
