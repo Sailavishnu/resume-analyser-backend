@@ -59,9 +59,26 @@ class RecruiterProfileOut(BaseModel):
     company_id: Optional[str] = None
     job_title: Optional[str] = None
     phone: Optional[str] = None
+    company_name: Optional[str] = None
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
+    location: Optional[str] = None
+    description: Optional[str] = None
     is_verified: bool = False
     verification_status: str = "pending"
     updated_at: Optional[datetime] = None
+
+
+class UpdateHrProfileRequest(BaseModel):
+    job_title: Optional[str] = None
+    phone: Optional[str] = None
+    company_name: str
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
+    location: str
+    description: Optional[str] = None
 
 
 class AdminUserListItem(BaseModel):

@@ -6,13 +6,49 @@ from pymongo.database import Database
 from typing import List, Optional
 
 from app.core.dependencies import get_current_user, require_hr, require_student_or_admin
+from app.core.exceptions import ForbiddenError
 from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse, PaginatedResponse, MessageResponse
 from app.schemas.jobs import JobCreateRequest, JobUpdateRequest, JobOut
 from app.services.job_service import JobService
 from app.utils.pagination import parse_pagination_params
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
+
+
+class GenerateJdRequest(BaseModel):
+    role_title: str = Field(min_length=2, max_length=120)
+    department: str = Field(min_length=2, max_length=120)
+    experience_level: str = Field(min_length=2, max_length=80)
+
+
+@router.post("/hr/generate-description", response_model=DataResponse[dict])
+async def generate_job_description(request: GenerateJdRequest, current_user: dict = Depends(require_hr)):
+    """Generate a role-specific job description using the configured Gemini key."""
+    from app.ml.gemini_service import gemini_interview_service
+    prompt = f'''Create a realistic, specific job posting using these details.
+Role: {request.role_title}\nDepartment: {request.department}\nExperience: {request.experience_level}
+Return only valid JSON with keys: description (string), required_skills (array of strings), preferred_skills (array of strings), target_keywords (array of strings), interview_questions (array of strings).
+Use role-appropriate skills and responsibilities. Do not invent salary or company facts. Avoid generic filler. Keep description 3-5 paragraphs.'''
+    raw = await run_in_threadpool(gemini_interview_service._call_gemini, prompt, 0.35, 1400, 30)
+    if not raw:
+        from app.core.exceptions import ProcessingError
+        raise ProcessingError("Gemini JD generation is unavailable. Check GEMINI_API_KEY and retry.")
+    import json
+    try:
+        result = json.loads(raw.replace("```json", "").replace("```", "").strip())
+        if not isinstance(result.get("description"), str) or not result["description"].strip():
+            raise ValueError("Missing description")
+        for key in ("required_skills", "preferred_skills", "target_keywords", "interview_questions"):
+            if not isinstance(result.get(key), list):
+                raise ValueError(f"Missing {key}")
+        result.update({"title": request.role_title.strip(), "department": request.department.strip(), "experience_level": request.experience_level.strip()})
+    except (ValueError, TypeError, KeyError) as exc:
+        from app.core.exceptions import ProcessingError
+        raise ProcessingError("Gemini returned an invalid job description. Please try again.") from exc
+    return DataResponse(data=result)
 
 
 # ─── Public job routes ─────────────────────────────────────────────────────
@@ -115,6 +151,8 @@ async def get_hr_job_details(
     job_service = JobService(db)
     
     job = await job_service.get_job_by_id(job_id, include_company=True)
+    if job.get("created_by") != current_user["id"]:
+        raise ForbiddenError("Not authorized to view this job")
     
     return DataResponse(data=JobOut(**job))
 

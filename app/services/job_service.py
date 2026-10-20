@@ -38,6 +38,7 @@ class JobService:
             "company_id": company_id,
             "created_by": ObjectId(hr_user_id),
             "title": job_data["title"],
+            "department": job_data.get("department"),
             "description": job_data["description"],
             "location": job_data["location"],
             "work_mode": job_data.get("work_mode", "On-site"),
@@ -45,7 +46,8 @@ class JobService:
             "experience_max": job_data.get("experience_max", 2),
             "salary_min": job_data.get("salary_min"),
             "salary_max": job_data.get("salary_max"),
-            "status": "draft",
+            # Launching from the HR form publishes a complete posting immediately.
+            "status": "active",
             "required_skills": job_data.get("required_skills", []),
             "preferred_skills": job_data.get("preferred_skills", []),
             "matching_config": job_data.get("matching_config", {
@@ -60,6 +62,8 @@ class JobService:
         result = self.db[C.JOBS].insert_one(job_doc)
         job_doc["_id"] = result.inserted_id
         job_doc["id"] = str(result.inserted_id)
+        job_doc["company_id"] = str(job_doc["company_id"])
+        job_doc["created_by"] = str(job_doc["created_by"])
         
         return job_doc
     
@@ -77,19 +81,23 @@ class JobService:
             if company:
                 job["company_name"] = company.get("name")
                 job["company_logo"] = company.get("logo_url")
+                job["company_website"] = company.get("website")
+                job["company_industry"] = company.get("industry")
+                job["company_location"] = company.get("location")
+                job["company_description"] = company.get("description")
+
+        job["company_id"] = str(job.get("company_id", ""))
+        job["created_by"] = str(job.get("created_by", ""))
         
         return job
     
     async def update_job(self, job_id: str, updates: dict, hr_user_id: str) -> Dict[str, Any]:
-        """Update job (only by creator or company HR)."""
+        """Update a job only by the HR account that created it."""
         job = await self.get_job_by_id(job_id, include_company=False)
         
         # Verify permission
         if str(job["created_by"]) != hr_user_id:
-            # Check if same company
-            hr_profile = self.db[C.RECRUITER_PROFILES].find_one({"user_id": ObjectId(hr_user_id)})
-            if not hr_profile or hr_profile.get("company_id") != job["company_id"]:
-                raise ForbiddenError("Not authorized to edit this job")
+            raise ForbiddenError("Not authorized to edit this job")
         
         # Validate matching config if being updated
         if "matching_config" in updates and updates["matching_config"]:
@@ -130,13 +138,8 @@ class JobService:
         status_filter: Optional[str] = None
     ) -> tuple[List[Dict[str, Any]], PaginationMeta]:
         """Get jobs for HR user's company."""
-        # Get HR company
-        hr_profile = self.db[C.RECRUITER_PROFILES].find_one({"user_id": ObjectId(hr_user_id)})
-        if not hr_profile or not hr_profile.get("company_id"):
-            return [], PaginationMeta(page=page, page_size=page_size, total=0, total_pages=0)
-        
-        # Build filter
-        filter_dict = {"company_id": hr_profile["company_id"]}
+        # A posting belongs to the HR account that created it.
+        filter_dict = {"created_by": ObjectId(hr_user_id)}
         if status_filter:
             filter_dict["status"] = status_filter
         
@@ -153,6 +156,16 @@ class JobService:
         # Add IDs and company info
         for job in jobs:
             job["id"] = str(job["_id"])
+            company = self.db[C.COMPANIES].find_one({"_id": job.get("company_id")}) if job.get("company_id") else None
+            if company:
+                job["company_name"] = company.get("name")
+                job["company_logo"] = company.get("logo_url")
+                job["company_website"] = company.get("website")
+                job["company_industry"] = company.get("industry")
+                job["company_location"] = company.get("location")
+                job["company_description"] = company.get("description")
+            job["company_id"] = str(job.get("company_id", ""))
+            job["created_by"] = str(job.get("created_by", ""))
         
         return jobs, pagination
     
@@ -199,6 +212,12 @@ class JobService:
             if company:
                 job["company_name"] = company.get("name")
                 job["company_logo"] = company.get("logo_url")
+                job["company_website"] = company.get("website")
+                job["company_industry"] = company.get("industry")
+                job["company_location"] = company.get("location")
+                job["company_description"] = company.get("description")
+            job["company_id"] = str(job.get("company_id", ""))
+            job["created_by"] = str(job.get("created_by", ""))
         
         return jobs, pagination
     

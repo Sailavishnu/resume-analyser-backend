@@ -79,6 +79,9 @@ class ApplicationService:
         
         app_doc["_id"] = app_id
         app_doc["id"] = str(app_id)
+        app_doc["student_id"] = str(app_doc["student_id"])
+        app_doc["job_id"] = str(app_doc["job_id"])
+        app_doc["resume_id"] = str(app_doc["resume_id"])
         return app_doc
     
     async def get_student_applications(
@@ -121,6 +124,9 @@ class ApplicationService:
                 if company:
                     app["company_name"] = company.get("name")
                     app["company_logo"] = company.get("logo_url")
+            for field in ("student_id", "job_id", "resume_id"):
+                if app.get(field) is not None:
+                    app[field] = str(app[field])
         
         return applications, pagination
     
@@ -140,12 +146,16 @@ class ApplicationService:
                 hr_profile = self.db[C.RECRUITER_PROFILES].find_one({"user_id": ObjectId(user_id)})
                 if hr_profile:
                     job = self.db[C.JOBS].find_one({"_id": app["job_id"]})
-                    if not job or job.get("company_id") != hr_profile.get("company_id"):
+                    if not job or str(job.get("created_by")) != user_id:
                         raise ForbiddenError("Access denied")
                 else:
                     raise ForbiddenError("Access denied")
         
         app["id"] = str(app["_id"])
+        for field in ("student_id", "job_id", "resume_id"):
+            if app.get(field) is not None:
+                app[field] = str(app[field])
+        app.pop("_id", None)
         return app
     
     async def update_application_status(
@@ -163,9 +173,9 @@ class ApplicationService:
         if not hr_profile:
             raise ForbiddenError("HR profile required")
         
-        job = self.db[C.JOBS].find_one({"_id": app["job_id"]})
-        if not job or job.get("company_id") != hr_profile.get("company_id"):
-            raise ForbiddenError("Can only update applications for your company's jobs")
+        job = self.db[C.JOBS].find_one({"_id": ObjectId(app["job_id"])})
+        if not job or str(job.get("created_by")) != hr_user_id:
+            raise ForbiddenError("Can only update applications for jobs you created")
         
         # Validate status transition
         valid_statuses = ["applied", "under_review", "shortlisted", "interview", "offer", "hired", "rejected", "withdrawn"]
@@ -192,11 +202,12 @@ class ApplicationService:
         })
         
         # Create notification for student
+        is_accepted = new_status == "hired"
         await self._create_notification(
             str(app["student_id"]),
             "application_status_changed",
-            f"Application Status Update - {job['title']}",
-            f"Your application status has been updated to: {new_status}",
+            f"You were accepted for {job['title']}!" if is_accepted else f"Application Status Update - {job['title']}",
+            f"Congratulations! {job['title']} has accepted your application." if is_accepted else f"Your application status has been updated to: {new_status}",
             f"/applications/{app_id}"
         )
         
@@ -304,4 +315,14 @@ class ApplicationService:
             "created_at": utc_now(),
         }
         
-        self.db[C.NOTIFICATIONS].insert_one(notification)
+        notification["_id"] = self.db[C.NOTIFICATIONS].insert_one(notification).inserted_id
+        notification["id"] = str(notification["_id"])
+        notification["user_id"] = str(notification["user_id"])
+        notification["created_at"] = notification["created_at"].isoformat()
+        notification.pop("_id", None)
+        try:
+            from app.main import sio
+            await sio.emit("notification:new", notification, room=f"user:{user_id}")
+        except Exception:
+            # Notification remains persisted; a disconnected client sees it on next fetch.
+            pass

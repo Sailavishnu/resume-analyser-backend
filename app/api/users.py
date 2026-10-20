@@ -10,7 +10,7 @@ from app.cloud.mongodb import get_database
 from app.schemas.common import DataResponse, MessageResponse
 from app.schemas.users import (
     UserOut, UpdateProfileRequest, StudentProfileOut, 
-    UpdateStudentProfileRequest, RecruiterProfileOut, AdminUserListItem
+    UpdateStudentProfileRequest, RecruiterProfileOut, UpdateHrProfileRequest, AdminUserListItem
 )
 from app.cloud import collections as C
 from app.utils.dates import utc_now
@@ -181,8 +181,54 @@ async def get_hr_profile(
         profile["_id"] = result.inserted_id
     
     profile["id"] = str(profile["_id"])
+    profile["user_id"] = str(profile["user_id"])
+    if profile.get("company_id") is not None:
+        profile["company_id"] = str(profile["company_id"])
+    company = db[C.COMPANIES].find_one({"_id": ObjectId(profile["company_id"])}) if profile.get("company_id") else {}
+    profile.update({
+        "company_name": (company or {}).get("name"),
+        "website": (company or {}).get("website"),
+        "industry": (company or {}).get("industry"),
+        "company_size": (company or {}).get("company_size"),
+        "location": (company or {}).get("location"),
+        "description": (company or {}).get("description"),
+    })
     
     return DataResponse(data=RecruiterProfileOut(**profile))
+
+
+@router.patch("/hr/profile", response_model=DataResponse[RecruiterProfileOut])
+async def update_hr_profile(
+    request: UpdateHrProfileRequest,
+    current_user: dict = Depends(require_hr),
+    db: Database = Depends(get_database),
+):
+    """Create/update the company owned by this HR account and its recruiter profile."""
+    user_id = ObjectId(current_user["id"])
+    profile = db[C.RECRUITER_PROFILES].find_one({"user_id": user_id})
+    if not profile:
+        profile = {"user_id": user_id, "created_at": utc_now(), "is_verified": False, "verification_status": "pending"}
+        result = db[C.RECRUITER_PROFILES].insert_one(profile)
+        profile["_id"] = result.inserted_id
+
+    company_data = {
+        "name": request.company_name.strip(),
+        "website": request.website,
+        "industry": request.industry,
+        "company_size": request.company_size,
+        "location": request.location.strip(),
+        "description": request.description,
+        "updated_at": utc_now(),
+    }
+    company_id = profile.get("company_id")
+    if company_id:
+        db[C.COMPANIES].update_one({"_id": company_id}, {"$set": company_data})
+    else:
+        company_data["created_at"] = utc_now()
+        company_id = db[C.COMPANIES].insert_one(company_data).inserted_id
+    updates = {"company_id": company_id, "job_title": request.job_title, "phone": request.phone, "updated_at": utc_now()}
+    db[C.RECRUITER_PROFILES].update_one({"_id": profile["_id"]}, {"$set": updates})
+    return await get_hr_profile(current_user, db)
 
 
 # ─── Admin user management routes ──────────────────────────────────────────

@@ -23,6 +23,7 @@ class MatchingConfig(BaseModel):
 
 class JobCreateRequest(BaseModel):
     title: str
+    department: Optional[str] = None
     description: str
     location: str
     work_mode: str = "On-site"      # Remote | On-site | Hybrid
@@ -38,6 +39,7 @@ class JobCreateRequest(BaseModel):
 
 class JobUpdateRequest(BaseModel):
     title: Optional[str] = None
+    department: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
     work_mode: Optional[str] = None
@@ -57,6 +59,7 @@ class JobOut(BaseModel):
     company_id: str
     created_by: str
     title: str
+    department: Optional[str] = None
     description: str
     location: str
     work_mode: str
@@ -75,3 +78,7 @@ class JobOut(BaseModel):
     # Company info (denormalised for list views)
     company_name: Optional[str] = None
     company_logo: Optional[str] = None
+    company_website: Optional[str] = None
+    company_industry: Optional[str] = None
+    company_location: Optional[str] = None
+    company_description: Optional[str] = None

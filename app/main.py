@@ -35,7 +35,7 @@ from app.ml.predictor import predictor
 # Import all API routers
 from app.api import (
     auth, users, admin, resumes, ats, jd_match, jobs,
-    applications, candidates, notifications, analytics, interviews, messages, practice, roadmap
+    applications, candidates, notifications, analytics, interviews, messages, practice, roadmap, screening
 )
 
 
@@ -181,6 +181,7 @@ api_app.include_router(admin.router, prefix=settings.API_V1_STR)
 
 # HR & Candidate Management
 api_app.include_router(candidates.router, prefix=settings.API_V1_STR)
+api_app.include_router(screening.router, prefix=settings.API_V1_STR)
 
 # Notifications & Analytics
 api_app.include_router(notifications.router, prefix=settings.API_V1_STR)
