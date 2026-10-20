@@ -127,25 +127,6 @@ async def startup_event():
         print("⚠️  Cloudinary not configured - file uploads will use local fallback")
     
     # Asynchronous non-blocking model warm-up (fast startup, zero waiting)
-    import asyncio
-    async def _warmup_ml():
-        try:
-            from app.ml.predictor import predictor
-            predictor.load_model()
-            from app.ml.embeddings import embedding_service
-            if not embedding_service.is_loaded:
-                embedding_service.load_model()
-            from app.ml.nlp_processor import nlp_processor
-            nlp_processor.load()
-            from app.ml.vector_store import get_vector_store
-            vector_store = get_vector_store()
-            vector_store.load()
-            print("⚡ ML custom model, embeddings & vector store ready")
-        except Exception as err:
-            print(f"⚠️  ML background warm-up notice: {err}")
-    
-    asyncio.create_task(_warmup_ml())
-
     print(f"\nAPI Documentation: http://{settings.HOST}:{settings.PORT}/docs")
     print(f"📊 Health Check: http://{settings.HOST}:{settings.PORT}/health")
 
