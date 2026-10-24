@@ -1,11 +1,4 @@
-"""
-Enhanced Candidate Management & HR Screening Service.
-
-Supports:
-1. Inter-Domain Knowledge Graph Screening (e.g. Kali Linux -> Cyber Security Specialist).
-2. Candidate Stage Progression (Applied -> Screened -> Shortlisted -> Interview Scheduled -> Offered -> Rejected).
-3. Mass candidate search across pool.
-"""
+"""Candidate review and application pipeline service for HR users."""
 from bson import ObjectId
 from pymongo.database import Database
 from typing import Dict, Any, List, Optional
@@ -34,8 +27,6 @@ class CandidateService:
         app_filter = {"job_id": ObjectId(job_id)}
         if status_filter:
             app_filter["status"] = status_filter
-        else:
-            app_filter["status"] = {"$ne": "hired"}
 
         applications, pagination = paginate_query(
             self.db[C.APPLICATIONS],
@@ -88,6 +79,10 @@ class CandidateService:
                 "location": profile.get("location"),
                 "target_role": profile.get("target_role"),
                 "resume_id": str(app["resume_id"]) if resume else None,
+                # This URL is returned only after the HR account is verified as
+                # the owner of the job above, so recruiters can actually review
+                # the resume attached to each application.
+                "resume_url": resume.get("cloudinary_url") if resume else None,
                 "status": app.get("status", "applied"),
                 "applied_at": app.get("applied_at") or app.get("created_at"),
                 "overall_score": app.get("match_score"),

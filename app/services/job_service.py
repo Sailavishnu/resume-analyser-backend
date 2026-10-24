@@ -24,7 +24,7 @@ class JobService:
         
         company_id = hr_profile.get("company_id")
         if not company_id:
-            raise ValidationError("HR user must be associated with a company")
+            raise ValidationError("Complete your company profile before posting a job.")
         
         # Validate matching config if provided
         if "matching_config" in job_data and job_data["matching_config"]:

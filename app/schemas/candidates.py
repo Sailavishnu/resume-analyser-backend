@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
@@ -9,8 +9,10 @@ class CandidateOut(BaseModel):
     student_id: str
     full_name: str
     email: str
+    phone: Optional[str] = None
     location: Optional[str] = None
     target_role: Optional[str] = None
+    skills: list[str] = Field(default_factory=list)
     resume_id: Optional[str] = None
     resume_url: Optional[str] = None
     status: str
@@ -18,8 +20,8 @@ class CandidateOut(BaseModel):
     overall_score: Optional[int] = None
     ats_score: Optional[int] = None
     skills_score: Optional[int] = None
-    matched_skills: list[str] = []
-    missing_skills: list[str] = []
+    matched_skills: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
     job_id: str
     job_title: str
 
