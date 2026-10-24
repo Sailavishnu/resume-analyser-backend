@@ -10,39 +10,47 @@ import logging
 import re
 import hashlib
 
-import os
-
 logger = logging.getLogger(__name__)
 
-ENABLE_TORCH_EMBEDDINGS = os.environ.get("ENABLE_TORCH_EMBEDDINGS", "true").lower() in ("true", "1")
-SENTENCE_TRANSFORMERS_AVAILABLE = False
-SentenceTransformer = None
+MODEL_REPO = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL_REVISION = "a6ee86b5ffddbfd5bfb2cc7f96f357d8cd094cde"
+MODEL_FILE = "onnx/model_qint8_avx2.onnx"
+MAX_SEQUENCE_LENGTH = 256
+INFERENCE_BATCH_SIZE = 8
 
-if ENABLE_TORCH_EMBEDDINGS:
-    try:
-        from sentence_transformers import SentenceTransformer
-        SENTENCE_TRANSFORMERS_AVAILABLE = True
-    except Exception as e:
-        SENTENCE_TRANSFORMERS_AVAILABLE = False
-        SentenceTransformer = None
-        logger.warning(f"SentenceTransformer not available ({e}). Using pure-Python semantic embeddings.")
-else:
-    logger.info("Using pure-Python lightweight semantic embedding engine (custom model mode).")
+SENTENCE_BERT_AVAILABLE = False
+onnxruntime = None
+hf_hub_download = None
+Tokenizer = None
+try:
+    import onnxruntime as _onnxruntime
+    from huggingface_hub import hf_hub_download as _hf_hub_download
+    from tokenizers import Tokenizer as _Tokenizer
+
+    onnxruntime = _onnxruntime
+    hf_hub_download = _hf_hub_download
+    Tokenizer = _Tokenizer
+    SENTENCE_BERT_AVAILABLE = True
+except Exception as exc:
+    logger.warning("Sentence-BERT ONNX dependencies are unavailable: %s", exc)
 
 
 class EmbeddingService:
     """
     Singleton service for generating semantic embeddings.
     
-    Uses 'all-MiniLM-L6-v2' model when available, with a fast, zero-dependency
-    384-dimensional fallback when PyTorch/SentenceTransformers cannot be loaded.
+    Uses the quantized all-MiniLM-L6-v2 ONNX model without loading PyTorch.
+    A deterministic lightweight fallback remains available to non-screening
+    features when the ONNX runtime or model download is unavailable.
     """
     
     _instance = None
-    _model: Optional[Any] = None
-    _model_name = "sentence-transformers/all-MiniLM-L6-v2"
+    _session: Optional[Any] = None
+    _tokenizer: Optional[Any] = None
+    _model_name = MODEL_REPO
     _embedding_dim = 384
     _use_fallback = False
+    _load_error: Optional[str] = None
     
     def __new__(cls):
         if cls._instance is None:
@@ -50,27 +58,49 @@ class EmbeddingService:
         return cls._instance
     
     def load_model(self):
-        """Load the sentence transformer model or initialize fallback."""
-        if self._model is not None or self._use_fallback:
+        """Load the quantized Sentence-BERT ONNX model, falling back if needed."""
+        if self._session is not None or self._use_fallback:
             return
 
-        if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            logger.info("SentenceTransformer not available; using pure-Python semantic embedding engine.")
+        if not SENTENCE_BERT_AVAILABLE:
+            self._load_error = "Install onnxruntime, tokenizers, and huggingface-hub."
+            logger.warning("Sentence-BERT ONNX runtime is unavailable; using the lightweight fallback.")
             self._use_fallback = True
             return
 
         try:
-            logger.info(f"Loading embedding model: {self._model_name}")
-            self._model = SentenceTransformer(self._model_name)
-            logger.info(f"Embedding model loaded successfully. Dimension: {self._embedding_dim}")
-        except Exception as e:
-            logger.warning(f"Could not load SentenceTransformer model ({e}). Falling back to local semantic encoder.")
+            logger.info("Loading quantized Sentence-BERT ONNX model: %s", self._model_name)
+            model_path = hf_hub_download(
+                repo_id=MODEL_REPO,
+                filename=MODEL_FILE,
+                revision=MODEL_REVISION,
+            )
+            tokenizer_path = hf_hub_download(
+                repo_id=MODEL_REPO,
+                filename="tokenizer.json",
+                revision=MODEL_REVISION,
+            )
+            session_options = onnxruntime.SessionOptions()
+            session_options.intra_op_num_threads = 1
+            session_options.inter_op_num_threads = 1
+            session_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self._session = onnxruntime.InferenceSession(
+                model_path,
+                sess_options=session_options,
+                providers=["CPUExecutionProvider"],
+            )
+            self._tokenizer = Tokenizer.from_file(tokenizer_path)
+            self._tokenizer.enable_truncation(max_length=MAX_SEQUENCE_LENGTH)
+            logger.info("Quantized Sentence-BERT ONNX model loaded successfully.")
+        except Exception as exc:
+            self._load_error = str(exc)
+            logger.exception("Could not load Sentence-BERT ONNX model; using local fallback.")
             self._use_fallback = True
     
     @property
     def is_loaded(self) -> bool:
         """Check if model or fallback is loaded."""
-        return (self._model is not None) or self._use_fallback
+        return (self._session is not None) or self._use_fallback
     
     @property
     def embedding_dimension(self) -> int:
@@ -83,11 +113,68 @@ class EmbeddingService:
 
     @property
     def engine_name(self) -> str:
-        if self._model is not None:
-            return "sentence-transformers"
+        if self._session is not None:
+            return "sentence-transformers-onnx"
         if self._use_fallback:
             return "deterministic-hash-fallback"
         return "not-loaded"
+
+    def _encode_onnx(self, texts: List[str], normalize: bool = True) -> np.ndarray:
+        """Encode text in small batches and apply Sentence-BERT mean pooling."""
+        if self._session is None or self._tokenizer is None:
+            raise RuntimeError("Sentence-BERT ONNX model is not loaded.")
+
+        input_specs = {item.name: item for item in self._session.get_inputs()}
+        outputs = []
+        for offset in range(0, len(texts), INFERENCE_BATCH_SIZE):
+            batch = texts[offset:offset + INFERENCE_BATCH_SIZE]
+            encodings = self._tokenizer.encode_batch(batch)
+            sequence_length = max(1, min(MAX_SEQUENCE_LENGTH, max(len(item.ids) for item in encodings)))
+            pad_id = self._tokenizer.token_to_id("[PAD]")
+            pad_id = 0 if pad_id is None else pad_id
+            input_ids = np.full((len(batch), sequence_length), pad_id, dtype=np.int64)
+            attention_mask = np.zeros((len(batch), sequence_length), dtype=np.int64)
+            token_type_ids = np.zeros((len(batch), sequence_length), dtype=np.int64)
+
+            for row, encoding in enumerate(encodings):
+                length = min(sequence_length, len(encoding.ids))
+                input_ids[row, :length] = encoding.ids[:length]
+                attention_mask[row, :length] = encoding.attention_mask[:length]
+                token_type_ids[row, :length] = encoding.type_ids[:length]
+
+            feed = {}
+            for name, spec in input_specs.items():
+                if name == "input_ids":
+                    values = input_ids
+                elif name == "attention_mask":
+                    values = attention_mask
+                elif name == "token_type_ids":
+                    values = token_type_ids
+                elif name == "position_ids":
+                    values = np.broadcast_to(
+                        np.arange(sequence_length, dtype=np.int64),
+                        (len(batch), sequence_length),
+                    )
+                else:
+                    raise RuntimeError(f"Unsupported ONNX model input: {name}")
+                if "int32" in spec.type:
+                    values = values.astype(np.int32, copy=False)
+                feed[name] = values
+
+            hidden = np.asarray(self._session.run(None, feed)[0], dtype=np.float32)
+            if hidden.ndim == 3:
+                mask = attention_mask.astype(np.float32)[:, :, None]
+                pooled = (hidden * mask).sum(axis=1) / np.maximum(mask.sum(axis=1), 1e-9)
+            elif hidden.ndim == 2:
+                pooled = hidden
+            else:
+                raise RuntimeError(f"Unexpected Sentence-BERT ONNX output shape: {hidden.shape}")
+            if normalize:
+                norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+                pooled = pooled / np.maximum(norms, 1e-12)
+            outputs.append(pooled)
+
+        return np.concatenate(outputs, axis=0).astype(np.float32, copy=False)
 
     def _fallback_encode(self, texts: List[str], normalize: bool = True) -> np.ndarray:
         """Pure Python / NumPy 384-dimensional dense semantic hashing encoder."""
@@ -144,13 +231,8 @@ class EmbeddingService:
         text_list = [text] if is_single else text
         
         try:
-            if self._model is not None:
-                embeddings = self._model.encode(
-                    text_list,
-                    normalize_embeddings=normalize,
-                    show_progress_bar=show_progress,
-                    convert_to_numpy=True
-                )
+            if self._session is not None:
+                embeddings = self._encode_onnx(text_list, normalize=normalize)
             else:
                 embeddings = self._fallback_encode(text_list, normalize=normalize)
             
@@ -161,7 +243,9 @@ class EmbeddingService:
             return embeddings
             
         except Exception as e:
-            logger.error(f"Error encoding text with model, using fallback: {e}")
+            logger.error("Error encoding text with Sentence-BERT ONNX model: %s", e)
+            if self._session is not None:
+                raise
             embeddings = self._fallback_encode(text_list, normalize=normalize)
             return embeddings[0] if is_single else embeddings
     

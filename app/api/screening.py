@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.core.dependencies import require_hr
 from app.ml.document_service import DocumentService
-from app.ml.embeddings import embedding_service, SENTENCE_TRANSFORMERS_AVAILABLE
+from app.ml.embeddings import embedding_service, SENTENCE_BERT_AVAILABLE
 from app.ml.nlp_processor import nlp_processor
 from app.schemas.common import DataResponse
 
@@ -43,28 +43,29 @@ def _cleanup_sessions(now: datetime) -> None:
 
 
 def _encode_bert(texts: str | list[str]) -> np.ndarray:
-    """Use SentenceTransformer directly so the general-purpose hash fallback is never used."""
-    if not SENTENCE_TRANSFORMERS_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sentence-BERT is unavailable. Install the backend ML requirements and retry.")
+    """Use the quantized Sentence-BERT ONNX model, never the hash fallback."""
+    if not SENTENCE_BERT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sentence-BERT ONNX runtime is unavailable. Install the backend ML requirements and retry.")
     embedding_service.load_model()
-    model = embedding_service._model
-    if model is None:
-        raise HTTPException(status_code=503, detail="Sentence-BERT model weights could not be loaded.")
+    if embedding_service.engine_name != "sentence-transformers-onnx":
+        detail = embedding_service._load_error or "Check outbound access to the Hugging Face model repository."
+        raise HTTPException(status_code=503, detail=f"Sentence-BERT ONNX model could not be loaded: {detail}")
     try:
-        return np.asarray(model.encode(texts, normalize_embeddings=True, convert_to_numpy=True), dtype=np.float32)
+        return np.asarray(embedding_service.encode_text(texts, normalize=True), dtype=np.float32)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Sentence-BERT could not encode this screening input.") from exc
 
 
 def _parse_archive(content: bytes) -> tuple[list[dict], object, dict]:
-    if not SENTENCE_TRANSFORMERS_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sentence-BERT is unavailable. Install the backend ML requirements and retry.")
+    if not SENTENCE_BERT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sentence-BERT ONNX runtime is unavailable. Install the backend ML requirements and retry.")
     try:
         embedding_service.load_model()
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Could not load Sentence-BERT for resume screening.") from exc
-    if embedding_service.engine_name != "sentence-transformers":
-        raise HTTPException(status_code=503, detail="Sentence-BERT could not load its model weights; screening was not run with a fallback model.")
+        raise HTTPException(status_code=503, detail="Could not load the quantized Sentence-BERT ONNX model for resume screening.") from exc
+    if embedding_service.engine_name != "sentence-transformers-onnx":
+        detail = embedding_service._load_error or "Check outbound access to the Hugging Face model repository."
+        raise HTTPException(status_code=503, detail=f"Sentence-BERT ONNX model unavailable: {detail}")
 
     try:
         archive = ZipFile(BytesIO(content))
